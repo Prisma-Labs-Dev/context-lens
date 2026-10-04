@@ -1,0 +1,62 @@
+name: ContextLens
+options:
+  bundleIdPrefix: com.prismalabs
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+packages:
+  ContextLensCore:
+    path: .
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_STRICT_CONCURRENCY: complete
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+targets:
+  ContextLens:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+    dependencies:
+      - package: ContextLensCore
+        product: ContextLensCore
+      - target: ContextLensCLI
+        embed: true
+        codeSign: false
+        copy:
+          destination: executables
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.prismalabs.contextlens
+        PRODUCT_NAME: Context Lens
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Context Lens
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+  ContextLensCLI:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/context-lens
+    dependencies:
+      - package: ContextLensCore
+        product: ContextLensCore
+    settings:
+      base:
+        PRODUCT_NAME: context-lens
+        PRODUCT_BUNDLE_IDENTIFIER: com.prismalabs.contextlens.cli
+        SKIP_INSTALL: YES
+schemes:
+  ContextLens:
+    build:
+      targets:
+        ContextLens: all

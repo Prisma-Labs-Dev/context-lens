@@ -1,0 +1,29 @@
+{
+  "name": "context-lens-health",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "classify": "node src/classify.ts",
+    "eval": "node evals/run.ts",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "lint": "oxlint",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "oxfmt": "0.71.0",
+    "oxlint": "1.86.0",
+    "typescript": "7.0.2"
+  },
+  "optionalDependencies": {
+    "@prisma-labs/jev": "github:Prisma-Labs-Dev/jev-kit#v0.1.1&path:/packages/jev"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

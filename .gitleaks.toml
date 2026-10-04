@@ -1,0 +1,7 @@
+# The redactor tests use fake tokens on purpose.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fake secrets in redactor tests"
+paths = ['Tests/ContextLensCoreTests/HealthTests\.swift']
