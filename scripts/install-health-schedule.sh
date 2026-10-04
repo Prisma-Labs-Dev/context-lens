@@ -2,12 +2,16 @@
 # Install the weekly agent-health run as a LaunchAgent: Mondays at 08:00, `context-lens health
 # --since 7d`, then `context-lens health judge`. Log: ~/.context-lens/health/schedule.log.
 # Remove with: launchctl bootout gui/$(id -u)/com.prismalabs.context-lens.health
+# The job points CONTEXT_LENS_HEALTH_DIR at this checkout's health/, so a Homebrew-installed CLI
+# finds the classifier too.
 set -euo pipefail
+cd "$(dirname "$0")/.."
 label=com.prismalabs.context-lens.health
 plist="$HOME/Library/LaunchAgents/$label.plist"
-cli="$HOME/.local/bin/context-lens"
+cli=$(command -v context-lens || echo "$HOME/.local/bin/context-lens")
+health_dir="$PWD/health"
 log="$HOME/.context-lens/health/schedule.log"
-[ -x "$cli" ] || { echo "install the command line tool first (Context Lens > Install Command Line Tool)" >&2; exit 1; }
+[ -x "$cli" ] || { echo "install the CLI first: brew install --cask prisma-labs-dev/tap/context-lens" >&2; exit 1; }
 mkdir -p "$(dirname "$log")" "$(dirname "$plist")"
 cat >"$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -20,6 +24,8 @@ cat >"$plist" <<EOF
     <string>/bin/zsh</string><string>-lc</string>
     <string>date; "$cli" health --since 7d &gt;/dev/null &amp;&amp; "$cli" health judge</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict><key>CONTEXT_LENS_HEALTH_DIR</key><string>$health_dir</string></dict>
   <key>StartCalendarInterval</key>
   <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
   <key>StandardOutPath</key><string>$log</string>

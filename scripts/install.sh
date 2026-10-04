@@ -8,9 +8,9 @@ pkill -x "Context Lens" 2>/dev/null || true
 mkdir -p "$HOME/Applications"
 rm -rf "$dest"
 ditto "$app" "$dest"
-# Earlier installs went to /Applications. Remove that copy so there is one app, and point the
-# command line tool link at the new one.
-rm -rf "/Applications/Context Lens.app"
+if [ -d "/Applications/Context Lens.app" ]; then
+  echo "note: /Applications/Context Lens.app also exists (Homebrew?); remove one so there is one app" >&2
+fi
 link="$HOME/.local/bin/context-lens"
 if [ -L "$link" ]; then ln -sf "$dest/Contents/MacOS/context-lens" "$link"; fi
 open "$dest"

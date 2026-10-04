@@ -31,7 +31,17 @@ that harness puts into its context there.
 
 ## Install
 
-There is no prebuilt download. Build it from source:
+With Homebrew:
+
+```bash
+brew install --cask prisma-labs-dev/tap/context-lens
+```
+
+This installs `/Applications/Context Lens.app`, signed with a Developer ID and notarized by Apple,
+and puts the `context-lens` CLI on your PATH. `brew upgrade --cask context-lens` updates it;
+`brew uninstall --zap --cask context-lens` also removes `~/.context-lens`.
+
+Or build it from source (needs Xcode and XcodeGen, see above):
 
 ```bash
 git clone https://github.com/Prisma-Labs-Dev/context-lens.git
@@ -39,13 +49,15 @@ cd context-lens
 scripts/install.sh      # Release build into ~/Applications/Context Lens.app, then launch
 ```
 
-The app is **unsigned** (signed ad hoc, not notarized) and **unsandboxed**. A copy you build
-yourself opens normally. If you copy the built app to another Mac, Gatekeeper will block it; open
-it once with right-click, Open, or build it on that Mac.
+A source build is signed ad hoc. It opens normally on the Mac that built it; copied to another
+Mac, Gatekeeper blocks it. "Install Command Line Tool" (in the presets panel) links
+`~/.local/bin/context-lens` to the CLI inside it.
 
-The menu bar icon (bars under a lens) lists recent folders and keeps running when the window is
-closed. "Open at Login" is in that menu. "Install Command Line Tool" (in the presets panel) links
-`~/.local/bin/context-lens` to the CLI inside the app.
+The app is **unsandboxed** either way. The menu bar icon (bars under a lens) lists recent folders
+and keeps running when the window is closed. "Open at Login" is in that menu.
+
+Releases are built on a Mac with `scripts/release.sh`, which signs, notarizes and zips the app
+for the cask in [Prisma-Labs-Dev/homebrew-tap](https://github.com/Prisma-Labs-Dev/homebrew-tap).
 
 ## What it reads and writes
 
