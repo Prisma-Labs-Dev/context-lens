@@ -159,6 +159,10 @@ context-lens health status 2026-10-04-zsh-separators applied --note "global rule
 It runs through a login shell (`zsh -lc`), so it classifies only if your login profile exports
 `TYPESAFE_API_KEY`. Installing the schedule means the judge sends the weekly report to Claude.
 
+The classifier and `judge.md` live in `health/` of a source checkout. The CLI looks for them next
+to the sources it was built from; a Homebrew install built elsewhere needs
+`CONTEXT_LENS_HEALTH_DIR=<checkout>/health`. The schedule script sets that for its job.
+
 ## Health view
 
 The app's Agent Health window (⌘⇧H, or Agent Health in the menu bar menu) reads the same files.
