@@ -157,6 +157,9 @@ public struct ClaudeResolver: Sendable {
             for child in FileUtil.children(dir) where FileUtil.isDirectory(child) {
                 let name = child.lastPathComponent
                 if skip.contains(name) || (name.hasPrefix(".") && name != ".claude") { continue }
+                // A session run in ~ would otherwise walk into Photos, Mail and Documents and
+                // set off a privacy prompt for each.
+                if PrivacyGuard.skip(child, home: env.home.path) { continue }
                 if name == ".claude" { continue }
                 for file in ["CLAUDE.md", ".claude/CLAUDE.md"] {
                     let url = child.appending(path: file)

@@ -60,8 +60,52 @@ final class AppModel {
     var notice: String?
     private var snapshotTask: Task<Void, Never>?
 
+    // Skills
+    /// Skills the selected past session used.
+    private(set) var sessionSkills: SessionSkills?
+    /// A skill to highlight in that list, when the session was opened from the Skills window.
+    var highlightedSkill: String?
+    /// A skill the Skills window should select, set by clicking a skill in a session.
+    var skillsRequest: String?
+    private var skillsTask: Task<Void, Never>?
+    /// How the selected Claude Code session's context grew, from the API usage it recorded.
+    private(set) var sessionGrowth: (id: String, growth: ContextGrowth)?
+    /// The selected session's first call, segment by segment.
+    private(set) var sessionAttribution: (id: String, attribution: ContextAttribution)?
+
+    // Measured
+    /// `claude -p "/context"` for the selected folder, cached per folder and refreshed on demand.
+    /// The measurement shown, from `measuredHistory`; the latest unless one was picked.
+    private(set) var measured: MeasuredContext?
+    /// Every measurement of the selected folder, oldest first.
+    private(set) var measuredHistory: [MeasuredContext] = []
+    private(set) var measuring = false
+    private(set) var measureError: String?
+
+    // MCP switches (McpSwitchesView.swift)
+    /// The settings sheet that switches MCP servers and plugins in the harnesses' own files.
+    var showingMcpSwitches = false
+    var mcpSwitches: McpToggleList?
+    var mcpScope: ToggleScope = ToggleScope(rawValue: UserDefaults.standard.string(forKey: "mcpScope") ?? "") ?? .folder {
+        didSet { UserDefaults.standard.set(mcpScope.rawValue, forKey: "mcpScope") }
+    }
+    /// A switch waiting for confirmation, with the diff it would write.
+    var pendingSwitch: (plan: TogglePlan, previews: [ConfigWriter.Preview])?
+    var lastSwitch: ConfigWriter.Applied?
+    var switchError: String?
+    /// The measurement taken before the last switch, to compare "Measure again" with.
+    var measuredBeforeSwitch: MeasuredContext?
+    let configWriter = ConfigWriter()
+
     let home = FileManager.default.homeDirectoryForCurrentUser
     private var openLatestSessionOnLoad = false
+    /// A session to open once the history has loaded, from `-session <id>` (with or without the harness prefix).
+    private var openSessionOnLoad: String?
+
+    /// Whether the app may read folders macOS guards (Documents, Desktop, iCloud Drive, other
+    /// volumes). Without it, session folders there are listed but not read, so the user sees
+    /// one Full Disk Access row instead of a privacy prompt per folder.
+    private(set) var fullDiskAccess = PrivacyGuard.hasFullDiskAccess()
 
     init() {
         let args = ProcessInfo.processInfo.arguments
@@ -74,11 +118,15 @@ final class AppModel {
             selectedDirectory = path
         }
         openLatestSessionOnLoad = args.contains("-latest-session")
+        if let i = args.firstIndex(of: "-session"), i + 1 < args.count { openSessionOnLoad = args[i + 1] }
         presets = presetStore.all()
         if let i = args.firstIndex(of: "-preset"), i + 1 < args.count { presetID = args[i + 1] }
         if !presets.contains(where: { $0.id == presetID }) { presetID = Preset.onDisk.id }
         rebuildFolderLists()
         reloadSnapshot()
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.recheckAccess() }
+        }
         // Load history at launch, not when the window appears: the menu bar lists recent folders
         // even when no window is open.
         Task { await loadSessions() }
@@ -97,6 +145,10 @@ final class AppModel {
         if openLatestSessionOnLoad, let s = sessionsHere.first {
             openLatestSessionOnLoad = false
             select(source: .session(s.id))
+        }
+        if let id = openSessionOnLoad, let s = sessions.first(where: { $0.id == id || $0.id.hasSuffix(":" + id) }) {
+            openSessionOnLoad = nil
+            open(session: s.id, harness: s.harness, cwd: s.cwd, skill: nil)
         }
     }
 
@@ -120,8 +172,30 @@ final class AppModel {
             byPath[s.cwd] = e
         }
         let fm = FileManager.default
-        sessionFolders = byPath.filter { fm.fileExists(atPath: $0.key) }
+        // Checking that a guarded folder exists would itself ask for access.
+        sessionFolders = byPath.filter { needsAccess($0.key) || fm.fileExists(atPath: $0.key) }
         rebuildFolderLists()
+    }
+
+    /// The folder is in a location macOS guards and the app has no Full Disk Access.
+    func needsAccess(_ path: String) -> Bool {
+        !fullDiskAccess && PrivacyGuard.isProtected(path, home: home.path)
+    }
+
+    /// Session folders the app leaves unread until it has Full Disk Access.
+    var foldersNeedingAccess: Int { sessionFolders.keys.filter(needsAccess).count }
+
+    /// Picks up Full Disk Access granted in System Settings while the app ran.
+    func recheckAccess() {
+        let now = PrivacyGuard.hasFullDiskAccess()
+        guard now != fullDiskAccess else { return }
+        fullDiskAccess = now
+        indexFolders()
+        reloadSnapshot()
+    }
+
+    func openFullDiskAccessSettings() {
+        NSWorkspace.shared.open(PrivacyGuard.settingsURL)
     }
 
     private func rebuildFolderLists() {
@@ -194,7 +268,16 @@ final class AppModel {
 
     func select(source s: Source) {
         source = s
+        highlightedSkill = nil
         reloadSnapshot()
+    }
+
+    /// Shows a recorded session in the main window, with one of its skills highlighted.
+    func open(session id: String, harness h: Harness, cwd: String, skill: String?) {
+        select(harness: h)
+        select(directory: cwd)
+        select(source: .session(id))
+        highlightedSkill = skill
     }
 
     var presetIsActive: Bool { presetApplies && preset.id != Preset.onDisk.id }
@@ -232,7 +315,11 @@ final class AppModel {
         let harness = harness
         let directory = selectedDirectory
         let session = selectedSession
-        guard directory != nil || session != nil else {
+        reloadSessionSkills(session)
+        loadMeasured()
+        if showingMcpSwitches { loadMcpSwitches() }
+        guard directory != nil || session != nil, !needsAccess(session?.cwd ?? directory ?? "") else {
+            loadingSnapshot = false
             baseSnapshot = nil
             snapshot = nil
             return
@@ -255,9 +342,95 @@ final class AppModel {
             applyPreset()
             loadingSnapshot = false
             if let snap, !snap.items.contains(where: { $0.id == selectedItemID }) {
-                selectedItemID = visibleSections(of: snap).first?.items.first?.id
+                selectedItemID = snap.treeEntries(onlyProblems: onlyProblems).lazy.compactMap(\.item).first?.id
             }
         }
+    }
+
+    private func reloadSessionSkills(_ session: SessionSummary?) {
+        skillsTask?.cancel()
+        guard let session else { sessionSkills = nil; sessionGrowth = nil; sessionAttribution = nil; highlightedSkill = nil; return }
+        if sessionSkills?.id != session.id { sessionSkills = nil }
+        if sessionGrowth?.id != session.id { sessionGrowth = nil }
+        if sessionAttribution?.id != session.id { sessionAttribution = nil }
+        skillsTask = Task {
+            let found = await Task.detached(priority: .userInitiated) { () -> (SessionSkills?, ContextGrowth?, ContextAttribution?) in
+                let scanner = SkillUsageScanner()
+                let skills = scanner.session(files: scanner.scan(transcript: session.file, harness: session.harness.rawValue))
+                guard session.harness == .claude, let growth = ContextGrowthReader().read(session.file) else { return (skills, nil, nil) }
+                let attribution = MeasuredContextStore().attribute(ClaudeSessionParser().parse(session), growth: growth, cwd: session.cwd)
+                return (skills, growth, attribution)
+            }.value
+            guard !Task.isCancelled else { return }
+            sessionSkills = found.0
+            sessionGrowth = found.1.map { (session.id, $0) }
+            sessionAttribution = found.2.map { (session.id, $0) }
+        }
+    }
+
+    /// The measurement applies to Claude Code's Now view of the selected folder.
+    var measuredApplies: Bool { source == .now && harness == .claude && selectedDirectory != nil }
+
+    private func loadMeasured() {
+        measureError = nil
+        guard measuredApplies, let dir = selectedDirectory else { measured = nil; measuredHistory = []; return }
+        guard measured?.folder != dir else { return }
+        measured = nil
+        measuredHistory = []
+        Task {
+            let history = await Task.detached(priority: .userInitiated) { () -> [MeasuredContext] in
+                let store = MeasuredContextStore()
+                store.harvest(around: dir)
+                return store.history(dir)
+            }.value
+            guard selectedDirectory == dir, measuredApplies else { return }
+            measuredHistory = history
+            measured = history.last
+        }
+    }
+
+    /// Shows an earlier measurement of the folder.
+    func showMeasurement(_ m: MeasuredContext) {
+        measured = m
+    }
+
+    /// The measurement before the one shown, to compare against.
+    var previousMeasurement: MeasuredContext? {
+        guard let m = measured, let i = measuredHistory.firstIndex(of: m), i > 0 else { return nil }
+        return measuredHistory[i - 1]
+    }
+
+    /// Runs `claude -p "/context"` in the selected folder. It takes a few seconds and costs no
+    /// tokens: the command never reaches the model.
+    func measure() {
+        guard measuredApplies, let dir = selectedDirectory, !measuring else { return }
+        measuring = true
+        measureError = nil
+        Task {
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<MeasuredContext, Error> in
+                Result { try MeasuredContextStore().measure(dir) }
+            }.value
+            measuring = false
+            guard selectedDirectory == dir else { return }
+            switch result {
+            case .success(let m):
+                measuredHistory = MeasuredContextStore().history(dir)
+                measured = measuredHistory.last ?? m
+            case .failure(let e): measureError = "\(e)"
+            }
+        }
+    }
+
+    /// The selected session's attribution, once loaded.
+    var attribution: ContextAttribution? {
+        guard let s = selectedSession, let a = sessionAttribution, a.id == s.id else { return nil }
+        return a.attribution
+    }
+
+    /// The growth of the selected session, once loaded.
+    var growth: ContextGrowth? {
+        guard let s = selectedSession, let g = sessionGrowth, g.id == s.id else { return nil }
+        return g.growth
     }
 
     // MARK: - Presets
@@ -438,11 +611,8 @@ final class AppModel {
         }
     }
 
-    func visibleSections(of snap: ContextSnapshot) -> [(kind: ContextKind, items: [ContextItem])] {
-        snap.sections.compactMap { section in
-            let items = onlyProblems ? section.items.filter(\.hasProblem) : section.items
-            return items.isEmpty ? nil : (section.kind, items)
-        }
+    func treeEntries(of snap: ContextSnapshot) -> [TreeEntry] {
+        snap.treeEntries(collapsed: collapsed, onlyProblems: onlyProblems)
     }
 
     func toggle(_ kind: ContextKind) {
@@ -451,7 +621,7 @@ final class AppModel {
 
     func moveItemSelection(_ delta: Int) {
         guard let snap = snapshot else { return }
-        let ids = visibleSections(of: snap).filter { !collapsed.contains($0.kind) }.flatMap { $0.items.map(\.id) }
+        let ids = treeEntries(of: snap).compactMap(\.item?.id)
         selectedItemID = Self.step(ids, from: selectedItemID, by: delta)
     }
 
@@ -473,10 +643,6 @@ final class AppModel {
     }
 }
 
-extension ContextItem {
-    var hasProblem: Bool { !issues.isEmpty || diskStatus == .changed || diskStatus == .deleted }
-}
-
 extension ContextSnapshot {
     var alwaysLoadedFiles: Int { items.filter { $0.path != nil && $0.load == .always }.count }
     var changedCount: Int { items.filter { $0.diskStatus == .changed || $0.diskStatus == .deleted }.count }
@@ -486,6 +652,17 @@ extension ContextSnapshot {
 enum Format {
     static func tokens(_ n: Int) -> String {
         n >= 1000 ? String(format: "%.1fk", Double(n) / 1000) : "\(n)"
+    }
+
+    /// Always in thousands with one decimal, so a legend of them adds up: "0.1k", "31.7k".
+    static func k(_ n: Int) -> String { String(format: "%.1fk", Double(n) / 1000) }
+
+    /// "+1.2k", "−31.6k".
+    static func signed(_ n: Int) -> String { (n > 0 ? "+" : n < 0 ? "−" : "±") + k(abs(n)) }
+
+    /// "7 Oct 15:00"
+    static func dateTime(_ date: Date) -> String {
+        date.formatted(.dateTime.day().month(.abbreviated).hour().minute())
     }
 
     static func relative(_ date: Date?) -> String {
