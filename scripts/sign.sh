@@ -16,7 +16,10 @@ if [ -z "$identity" ]; then
   echo "note: no Apple Development identity; signing ad hoc, so privacy grants reset on every build" >&2
 fi
 # Nested code first (the CLI, debug dylibs), then the app.
-find "$app/Contents/MacOS" "$app/Contents/Frameworks" -type f -perm -u+x -o -name '*.dylib' 2>/dev/null |
-  grep -v "/Contents/MacOS/Context Lens$" |
-  while read -r f; do codesign --force --sign "$identity" --timestamp=none "$f"; done
+dirs=("$app/Contents/MacOS")
+[ -d "$app/Contents/Frameworks" ] && dirs+=("$app/Contents/Frameworks")
+find "${dirs[@]}" -type f \( -perm -u+x -o -name '*.dylib' \) | while read -r f; do
+  [ "$f" = "$app/Contents/MacOS/Context Lens" ] && continue
+  codesign --force --sign "$identity" --timestamp=none "$f"
+done
 codesign --force --sign "$identity" --timestamp=none "$app"
