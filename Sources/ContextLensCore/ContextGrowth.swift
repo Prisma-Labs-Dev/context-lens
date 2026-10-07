@@ -49,6 +49,13 @@ public struct ContextGrowth: Codable, Hashable, Sendable {
     /// Estimated tokens of the user's first message and the command text it expanded to: part of
     /// the first call, but not of the context a session starts with.
     public var firstMessageTokens: Int
+    /// What the harness added to the first call that the context tree doesn't list as an item:
+    /// hook output, the model and date lines, permission-mode guidance and so on. Estimated.
+    public var firstTurnReminders: [Source] = []
+    /// How the first call's input split: read from the prompt cache (a prefix an earlier
+    /// session with the same setup already sent) and newly written.
+    public var firstCallCacheRead: Int?
+    public var firstCallCacheWritten: Int?
 
     public var firstCall: Int? { calls.first?.tokens }
     public var peak: Int { calls.map(\.tokens).max() ?? 0 }
@@ -83,6 +90,8 @@ public struct ContextGrowthReader: Sendable {
         var firstMessage = 0
         var lastCommand: String?
         var sawPrompt = false, sawInstructions = false
+        var reminders: [String: Int] = [:]
+        var cacheRead: Int?, cacheWritten: Int?
 
         func add(_ label: String, chars: Int, user: Bool = false) {
             guard chars > 0 else { return }
@@ -106,6 +115,8 @@ public struct ContextGrowthReader: Sendable {
                     if calls.isEmpty {
                         entrypoint = obj["entrypoint"] as? String
                         model = m["model"] as? String
+                        cacheRead = Self.int(u["cache_read_input_tokens"])
+                        cacheWritten = Self.int(u["cache_creation_input_tokens"]) + Self.int(u["input_tokens"])
                     }
                     let added = order.map { ContextGrowth.Source(label: $0, tokens: TokenEstimate.tokens(chars: pending[$0]!)) }
                         .filter { $0.tokens > 0 }
@@ -158,6 +169,9 @@ public struct ContextGrowthReader: Sendable {
                 // What the harness injects. The system prompt and instruction files are recorded
                 // again when they change; only the first copy adds to the context.
                 guard let a = obj["attachment"] as? [String: Any], let type = a["type"] as? String else { return }
+                if calls.isEmpty, let r = Self.reminderLabel(type) {
+                    reminders[r, default: 0] += Self.textLength(a)
+                }
                 let label: String
                 switch type {
                 case "prompt_snapshot":
@@ -190,7 +204,41 @@ public struct ContextGrowthReader: Sendable {
         }
         guard !calls.isEmpty else { return nil }
         return ContextGrowth(entrypoint: entrypoint, model: model, calls: calls, compactions: compactions,
-                             firstMessageTokens: TokenEstimate.tokens(chars: firstMessage))
+                             firstMessageTokens: TokenEstimate.tokens(chars: firstMessage),
+                             firstTurnReminders: reminders.map { ContextGrowth.Source(label: $0.key, tokens: TokenEstimate.tokens(chars: $0.value)) }
+                                 .filter { $0.tokens > 0 }.sorted { ($0.tokens, $1.label) > ($1.tokens, $0.label) },
+                             firstCallCacheRead: cacheRead, firstCallCacheWritten: cacheWritten)
+    }
+
+    /// Attachment types the session parser lists as context items; the rest of what the harness
+    /// adds before the first call is a reminder. Hook output is listed, but as loaded on demand.
+    static let listedTypes: Set<String> = [
+        "instructions", "nested_memory", "prompt_snapshot", "skill_listing", "invoked_skills", "mcp_instructions_delta",
+        "agent_listing_delta", "deferred_tools_delta", "context_sections", "session_context", "environment",
+    ]
+
+    static func reminderLabel(_ type: String) -> String? {
+        guard !listedTypes.contains(type) else { return nil }
+        switch type {
+        case let t where t.hasPrefix("hook"): return "Hook output"
+        case "model": return "Model identity"
+        case "date": return "Date"
+        case "auto_mode", "plan_mode", "permission_mode": return "Permission mode guidance"
+        case "total_tokens_reminder", "token_usage", "budget_usd": return "Token budget reminder"
+        case "remote_session_change": return "Session links"
+        case "todo_reminder", "task_status": return "Task reminders"
+        default: return type.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    /// Characters of the text in an attachment: string values, not keys or the type.
+    static func textLength(_ value: Any?, key: String? = nil) -> Int {
+        switch value {
+        case let s as String: return key == "type" ? 0 : s.utf8.count
+        case let d as [String: Any]: return d.reduce(0) { $0 + textLength($1.value, key: $1.key) }
+        case let a as [Any]: return a.reduce(0) { $0 + textLength($1) }
+        default: return 0
+        }
     }
 
     /// "Read GUIDE.md", "Bash: run the tests", "Skill deploy", "Agent: find callers", "garden water_plants".

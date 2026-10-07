@@ -220,9 +220,9 @@ struct SessionSkillRow: View {
     }
 }
 
-/// Token totals, a budget bar by kind, and the problems filter. Where Claude Code reported a real
-/// number (a recorded session's API usage, or `/context` for Now), that leads and the estimate
-/// from files and transcript is secondary.
+/// Token totals, a budget bar, and the problems filter. Where Claude Code reported a real number
+/// (a recorded session's API usage, or `/context` for Now), that leads and the bar attributes it
+/// segment by segment, with what nothing explains as its own Unattributed segment.
 struct SummaryStrip: View {
     @Environment(AppModel.self) private var model
     var snapshot: ContextSnapshot
@@ -231,6 +231,7 @@ struct SummaryStrip: View {
         @Bindable var model = model
         let growth = model.presetIsActive ? nil : model.growth
         let measured = model.presetIsActive || !model.measuredApplies ? nil : model.measured
+        let attribution = growth != nil ? model.attribution : measured.map(ContextAttribution.measured)
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if let growth, let first = growth.firstCall {
@@ -241,6 +242,7 @@ struct SummaryStrip: View {
                     Text(Format.tokens(measured.used)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
                     Text("measured by claude /context").font(Theme.small).foregroundStyle(Theme.ink2)
                     MeasureButton()
+                    MeasurementHistory()
                 } else {
                     if model.presetIsActive, let base = model.baseSnapshot, base.startingTokens != snapshot.startingTokens {
                         Text("≈\(Format.tokens(base.startingTokens))").font(.system(size: 13)).monospacedDigit().foregroundStyle(Theme.ink3).strikethrough()
@@ -255,23 +257,24 @@ struct SummaryStrip: View {
                 ProblemsToggle(count: snapshot.problemCount, on: $model.onlyProblems)
             }
             if let growth, growth.firstCall != nil {
-                Text("≈\(Format.tokens(snapshot.startingTokens)) of it estimated from the transcript before the first message · API usage, \(growth.harnessLabel)")
+                Text(sessionSource(growth, attribution))
                     .font(Theme.small).foregroundStyle(Theme.ink3).lineLimit(1).truncationMode(.middle)
+                    .help(attribution?.measurement.map { "Built-in tools, MCP tool schemas and the harness prompt come from claude /context in \($0.folder), \(Format.dateTime($0.measuredAt)). The session may have loaded a different setup." } ?? "")
             } else if let measured {
-                Text("≈\(Format.tokens(snapshot.startingTokens)) estimated from files · Claude Code CLI, \(Format.relative(measured.measuredAt))")
+                Text("≈\(Format.tokens(snapshot.startingTokens)) estimated from files · Claude Code CLI, measured \(Format.dateTime(measured.measuredAt))\(measured.fromTranscript ? " (a /context run in a transcript)" : "")")
                     .font(Theme.small).foregroundStyle(Theme.ink3).lineLimit(1)
                     .help("Measured in a clean login shell in this folder. Claude Desktop adds its own MCP tools, so a Desktop session starts larger.")
+                if let previous = model.previousMeasurement {
+                    MeasurementDiff(current: measured, previous: previous)
+                }
             }
             if let error = model.measureError {
                 Text(error).font(Theme.small).foregroundStyle(Theme.stale).lineLimit(2)
             }
-            BudgetBar(snapshot: snapshot, extra: extraParts(growth: growth, measured: measured))
-            if let growth, let hidden = growth.hiddenTokens(estimated: snapshot.startingTokens), hidden > 0 {
-                Text("Not in transcript ≈\(Format.tokens(hidden)): built-in tools, MCP tool schemas and the harness prompt. Breakdown available for Now only.")
-                    .font(Theme.small).foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
-            } else if let measured, !measured.mcpServers.isEmpty {
-                Text("MCP tool schemas: " + measured.mcpServers.map { "\($0.name) \(Format.tokens($0.tokens))" }.joined(separator: " · "))
-                    .font(Theme.small).monospacedDigit().foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
+            if let attribution {
+                AttributionBar(attribution: attribution)
+            } else {
+                BudgetBar(snapshot: snapshot, extra: extraParts(growth: growth))
             }
         }
         .padding(.horizontal, 14)
@@ -288,26 +291,30 @@ struct SummaryStrip: View {
         return parts.map { "· " + $0 }.joined(separator: " ")
     }
 
-    /// What the bar adds to the estimate: the measured part no file or transcript shows.
-    private func extraParts(growth: ContextGrowth?, measured: MeasuredContext?) -> [BudgetBar.Part] {
-        if let growth, let hidden = growth.hiddenTokens(estimated: snapshot.startingTokens) {
-            return [
-                .init(id: "first-message", title: "First message", tokens: growth.firstMessageTokens, color: Theme.ink2),
-                .init(id: "hidden", title: "Not in transcript: built-in tools, MCP tool schemas, harness prompt", tokens: hidden, color: Theme.ink3.opacity(0.45)),
-            ]
+    /// "Tools and MCP schemas measured 7 Oct 15:00, may differ from the session · API usage, CLI"
+    private func sessionSource(_ g: ContextGrowth, _ a: ContextAttribution?) -> String {
+        let what: String
+        if let m = a?.measurement {
+            what = "Tools and MCP schemas measured \(Format.dateTime(m.measuredAt)), may differ from the session"
+        } else if a != nil {
+            what = "No /context measurement of this folder: tools and MCP schemas unattributed"
+        } else {
+            what = "≈\(Format.tokens(snapshot.startingTokens)) estimated from the transcript"
         }
-        if let measured {
-            return [
-                .init(id: "system-prompt", title: "Harness prompt", tokens: measured.category("System prompt"), color: Theme.ink3.opacity(0.75)),
-                .init(id: "system-tools", title: "Built-in tools", tokens: measured.category("System tools"), color: Theme.ink3.opacity(0.5)),
-                .init(id: "mcp-tools", title: "MCP tool schemas", tokens: measured.category("MCP tools"), color: Theme.ink3.opacity(0.3)),
-            ]
-        }
-        return []
+        return "\(what) · API usage, \(g.harnessLabel)"
+    }
+
+    /// Before the attribution loads: the first message and what the transcript doesn't record.
+    private func extraParts(growth: ContextGrowth?) -> [BudgetBar.Part] {
+        guard let growth, let hidden = growth.hiddenTokens(estimated: snapshot.startingTokens) else { return [] }
+        return [
+            .init(id: "first-message", title: "First message", tokens: growth.firstMessageTokens, color: Theme.ink2),
+            .init(id: "hidden", title: "Not in transcript", tokens: hidden, color: Theme.ink3.opacity(0.45)),
+        ]
     }
 }
 
-/// Runs `claude -p "/context"` for the folder, or again to refresh it.
+/// Runs `claude -p "/context"` for the folder, or again to add to its history.
 struct MeasureButton: View {
     @Environment(AppModel.self) private var model
 
@@ -319,7 +326,7 @@ struct MeasureButton: View {
                 } else {
                     Image(systemName: model.measured == nil ? "gauge.with.dots.needle.33percent" : "arrow.clockwise").font(.system(size: 9.5))
                 }
-                Text(model.measured == nil ? "Measure" : "Refresh")
+                Text(model.measured == nil ? "Measure" : "Measure again")
             }
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(Theme.ink2)
@@ -327,7 +334,124 @@ struct MeasureButton: View {
         }
         .buttonStyle(.plain)
         .disabled(model.measuring)
-        .help("Run claude -p \"/context\" in this folder: a few seconds, no tokens. Counts the built-in tools and MCP tool schemas no file shows.")
+        .help("Run claude -p \"/context\" in this folder: a few seconds, no tokens. Counts the built-in tools and MCP tool schemas no file shows. Earlier measurements stay in the history.")
+    }
+}
+
+/// Earlier measurements of the folder, to show one and compare it with the one before.
+struct MeasurementHistory: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if model.measuredHistory.count > 1 {
+            Menu {
+                ForEach(model.measuredHistory.reversed(), id: \.measuredAt) { m in
+                    Button {
+                        model.showMeasurement(m)
+                    } label: {
+                        Text("\(m == model.measured ? "✓ " : "")\(Format.dateTime(m.measuredAt))  \(Format.tokens(m.used))\(m.fromTranscript ? "  (transcript)" : "")")
+                    }
+                }
+            } label: {
+                Text("History \(model.measuredHistory.count)").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.ink2)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.visible)
+            .fixedSize()
+            .help("Every measurement of this folder. Pick one to show it, compared with the one before.")
+        }
+    }
+}
+
+/// "vs 7 Oct 15:00: −32.5k · plugin_garden_garden −31.6k · Built-in tools −0.4k"
+struct MeasurementDiff: View {
+    var current: MeasuredContext
+    var previous: MeasuredContext
+
+    var body: some View {
+        let a = ContextAttribution.measured(current), b = ContextAttribution.measured(previous)
+        let ids = (a.segments + b.segments).map(\.id).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        let changes = ids.compactMap { id -> (String, Int)? in
+            let x = a.segments.first { $0.id == id }, y = b.segments.first { $0.id == id }
+            let d = (x?.tokens ?? 0) - (y?.tokens ?? 0)
+            return abs(d) >= 100 ? ((x ?? y)!.title, d) : nil
+        }.sorted { abs($0.1) > abs($1.1) }
+        let total = current.used - previous.used
+        Text((["vs \(Format.dateTime(previous.measuredAt)): \(Format.signed(total))"] + changes.prefix(4).map { "\($0.0) \(Format.signed($0.1))" }).joined(separator: " · "))
+            .font(Theme.small).monospacedDigit().foregroundStyle(total < 0 ? Theme.added : (total > 0 ? Theme.removed : Theme.ink3))
+            .lineLimit(1).truncationMode(.tail)
+            .help(changes.map { "\($0.0): \(Format.signed($0.1))" }.joined(separator: "\n"))
+    }
+}
+
+/// The measured total split into named segments. The legend's values are rounded so they sum to
+/// the rounded total; hover a segment for what it holds and where its number comes from.
+struct AttributionBar: View {
+    var attribution: ContextAttribution
+
+    var body: some View {
+        let parts = attribution.segments
+        let positive = parts.filter { $0.tokens > 0 }
+        let total = max(1, positive.reduce(0) { $0 + $1.tokens })
+        VStack(alignment: .leading, spacing: 6) {
+            GeometryReader { geo in
+                HStack(spacing: 1) {
+                    ForEach(positive) { part in
+                        Rectangle()
+                            .fill(color(part))
+                            .frame(width: max(2, (geo.size.width - CGFloat(positive.count - 1)) * CGFloat(part.tokens) / CGFloat(total)))
+                            .help(help(part))
+                    }
+                }
+            }
+            .frame(height: 4)
+            .clipShape(RoundedRectangle(cornerRadius: 2))
+            FlowLayout(spacing: 10, lineSpacing: 3) {
+                ForEach(parts) { part in
+                    HStack(spacing: 4) {
+                        Circle().fill(color(part)).frame(width: 6, height: 6)
+                        Text(part.title).foregroundStyle(part.id == "unattributed" ? Theme.ink : Theme.ink2)
+                        Text((part.id == "unattributed" ? "≈" : "") + Format.k(part.shown)).foregroundStyle(Theme.ink3).monospacedDigit()
+                    }
+                    .font(.system(size: 10.5))
+                    .help(help(part))
+                }
+                Text("= \(Format.k(attribution.shownTotal))").font(.system(size: 10.5)).monospacedDigit().foregroundStyle(Theme.ink3)
+                    .help(attribution.rounding)
+            }
+        }
+    }
+
+    private func color(_ p: ContextAttribution.Segment) -> Color {
+        switch p.id {
+        case "harness-prompt": ContextKind.systemPrompt.color
+        case "built-in-tools": Theme.ink3.opacity(0.55)
+        case "instructions": ContextKind.instructions.color
+        case "skills": ContextKind.skill.color
+        case "subagents": ContextKind.agent.color
+        case "environment": ContextKind.environment.color
+        case "reminders": ContextKind.hook.color
+        case "first-message": Theme.ink2
+        case "unattributed", "rounding": Theme.ink3.opacity(0.25)
+        default: p.isMCP || p.id == "mcp-other" ? ContextKind.mcp.color.opacity(p.schemas == nil ? 0.45 : 1) : Theme.ink3
+        }
+    }
+
+    private func help(_ p: ContextAttribution.Segment) -> String {
+        var lines = ["\(p.title): \(p.tokens) tokens"]
+        if let d = p.detail, !d.isEmpty { lines.append(d) }
+        switch p.basis {
+        case .measured: lines.append(attribution.measurement.map { "Counted by claude /context, \(Format.dateTime($0.measuredAt)) in \($0.folder)" } ?? "Counted by Claude Code")
+        case .estimated: lines.append("Estimated from the transcript text" + (attribution.calibration.map { String(format: ", scaled ×%.2f", $0) } ?? ""))
+        case .mixed:
+            let from = p.schemasFrom ?? attribution.measurement
+            lines.append("Schemas counted by claude /context" + (from.map { ", \(Format.dateTime($0.measuredAt)) in \($0.folder)" } ?? "") + "; instructions estimated from the transcript")
+            if p.schemasFrom != nil { lines.append("The folder's own measurement doesn't have this server, so its schemas come from the nearest measurement that does.") }
+        case .remainder:
+            lines.append("The measured total minus everything attributed. Likely causes:")
+            lines += attribution.causes.map { "• " + $0 }
+        }
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -426,7 +550,12 @@ struct TreeHeader: View {
                 if model.canEditPreset, let group = Preset.Group(kind: kind) {
                     GroupSwitch(group: group)
                 }
-                if tokens > 0 { Text(Format.tokens(tokens)).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(Theme.ink3) }
+                if let mcp = mcpTotal {
+                    Text(Format.tokens(mcp)).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(Theme.ink3)
+                        .help("Tool schemas and instructions of every MCP server, schemas from claude /context")
+                } else if tokens > 0 {
+                    Text(Format.tokens(tokens)).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(Theme.ink3)
+                }
             }
             .padding(.horizontal, 12)
             .frame(height: 24)
@@ -437,9 +566,16 @@ struct TreeHeader: View {
         .onHover { hovering = $0 }
         .padding(.top, 4)
     }
+
+    /// A session's MCP servers at their real cost, once the attribution has their schemas.
+    private var mcpTotal: Int? {
+        guard kind == .mcp, let a = model.attribution, a.segments.contains(where: { $0.isMCP && $0.schemas != nil }) else { return nil }
+        return a.segments.filter(\.isMCP).reduce(0) { $0 + $1.tokens }
+    }
 }
 
 struct TreeRow: View {
+    @Environment(AppModel.self) private var model
     var item: ContextItem
     var selected: Bool
     var editable = false
@@ -473,10 +609,11 @@ struct TreeRow: View {
                     .foregroundStyle(Theme.changed)
                     .help(item.diskStatus == .changed ? "Changed since this session read it" : "Deleted since this session read it")
             }
-            Text(Format.tokens(item.tokens))
+            Text(tokens)
                 .font(.system(size: 10.5).monospacedDigit())
                 .foregroundStyle(Theme.ink3)
                 .frame(minWidth: 30, alignment: .trailing)
+                .help(mcpCost.map { "\($0.detail ?? ""). Tool schemas are sent with the tool definitions, which the transcript doesn't record." } ?? "")
         }
         .padding(.leading, editable ? 34 : 28)
         .padding(.trailing, 12)
@@ -495,9 +632,27 @@ struct TreeRow: View {
         isFile ? URL(filePath: item.path!).lastPathComponent : item.title
     }
 
+    /// A session's MCP row holds the server's instructions; with a measurement, its real cost adds
+    /// the tool schemas.
+    private var mcpCost: ContextAttribution.Segment? {
+        guard item.kind == .mcp, item.scope == "Server instructions" else { return nil }
+        return model.attribution?.mcp(item.title)
+    }
+
+    private var tokens: String {
+        guard item.kind == .mcp, item.scope == "Server instructions" else { return Format.tokens(item.tokens) }
+        if let cost = mcpCost, cost.schemas != nil { return Format.tokens(cost.tokens) }
+        return "\(Format.tokens(item.tokens)) + schemas unknown"
+    }
+
     private var location: String? {
         // A session's MCP rows hold the server's instructions; its tool schemas are not in the transcript.
-        if item.kind == .mcp, item.scope == "Server instructions" { return "instructions only" }
+        if item.kind == .mcp, item.scope == "Server instructions" {
+            if let cost = mcpCost, let schemas = cost.schemas {
+                return "schemas \(Format.tokens(schemas)) + instructions \(Format.tokens(cost.instructions ?? 0))"
+            }
+            return "instructions only"
+        }
         guard isFile, let slash = item.title.lastIndex(of: "/") else { return nil }
         return String(item.title[..<slash])
     }

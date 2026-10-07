@@ -70,10 +70,15 @@ final class AppModel {
     private var skillsTask: Task<Void, Never>?
     /// How the selected Claude Code session's context grew, from the API usage it recorded.
     private(set) var sessionGrowth: (id: String, growth: ContextGrowth)?
+    /// The selected session's first call, segment by segment.
+    private(set) var sessionAttribution: (id: String, attribution: ContextAttribution)?
 
     // Measured
     /// `claude -p "/context"` for the selected folder, cached per folder and refreshed on demand.
+    /// The measurement shown, from `measuredHistory`; the latest unless one was picked.
     private(set) var measured: MeasuredContext?
+    /// Every measurement of the selected folder, oldest first.
+    private(set) var measuredHistory: [MeasuredContext] = []
     private(set) var measuring = false
     private(set) var measureError: String?
 
@@ -328,18 +333,22 @@ final class AppModel {
 
     private func reloadSessionSkills(_ session: SessionSummary?) {
         skillsTask?.cancel()
-        guard let session else { sessionSkills = nil; sessionGrowth = nil; highlightedSkill = nil; return }
+        guard let session else { sessionSkills = nil; sessionGrowth = nil; sessionAttribution = nil; highlightedSkill = nil; return }
         if sessionSkills?.id != session.id { sessionSkills = nil }
         if sessionGrowth?.id != session.id { sessionGrowth = nil }
+        if sessionAttribution?.id != session.id { sessionAttribution = nil }
         skillsTask = Task {
-            let found = await Task.detached(priority: .userInitiated) { () -> (SessionSkills?, ContextGrowth?) in
+            let found = await Task.detached(priority: .userInitiated) { () -> (SessionSkills?, ContextGrowth?, ContextAttribution?) in
                 let scanner = SkillUsageScanner()
                 let skills = scanner.session(files: scanner.scan(transcript: session.file, harness: session.harness.rawValue))
-                return (skills, session.harness == .claude ? ContextGrowthReader().read(session.file) : nil)
+                guard session.harness == .claude, let growth = ContextGrowthReader().read(session.file) else { return (skills, nil, nil) }
+                let attribution = MeasuredContextStore().attribute(ClaudeSessionParser().parse(session), growth: growth, cwd: session.cwd)
+                return (skills, growth, attribution)
             }.value
             guard !Task.isCancelled else { return }
             sessionSkills = found.0
             sessionGrowth = found.1.map { (session.id, $0) }
+            sessionAttribution = found.2.map { (session.id, $0) }
         }
     }
 
@@ -348,8 +357,31 @@ final class AppModel {
 
     private func loadMeasured() {
         measureError = nil
-        guard measuredApplies, let dir = selectedDirectory else { measured = nil; return }
-        if measured?.folder != dir { measured = MeasuredContextStore().cached(dir) }
+        guard measuredApplies, let dir = selectedDirectory else { measured = nil; measuredHistory = []; return }
+        guard measured?.folder != dir else { return }
+        measured = nil
+        measuredHistory = []
+        Task {
+            let history = await Task.detached(priority: .userInitiated) { () -> [MeasuredContext] in
+                let store = MeasuredContextStore()
+                store.harvest(around: dir)
+                return store.history(dir)
+            }.value
+            guard selectedDirectory == dir, measuredApplies else { return }
+            measuredHistory = history
+            measured = history.last
+        }
+    }
+
+    /// Shows an earlier measurement of the folder.
+    func showMeasurement(_ m: MeasuredContext) {
+        measured = m
+    }
+
+    /// The measurement before the one shown, to compare against.
+    var previousMeasurement: MeasuredContext? {
+        guard let m = measured, let i = measuredHistory.firstIndex(of: m), i > 0 else { return nil }
+        return measuredHistory[i - 1]
     }
 
     /// Runs `claude -p "/context"` in the selected folder. It takes a few seconds and costs no
@@ -365,10 +397,18 @@ final class AppModel {
             measuring = false
             guard selectedDirectory == dir else { return }
             switch result {
-            case .success(let m): measured = m
+            case .success(let m):
+                measuredHistory = MeasuredContextStore().history(dir)
+                measured = measuredHistory.last ?? m
             case .failure(let e): measureError = "\(e)"
             }
         }
+    }
+
+    /// The selected session's attribution, once loaded.
+    var attribution: ContextAttribution? {
+        guard let s = selectedSession, let a = sessionAttribution, a.id == s.id else { return nil }
+        return a.attribution
     }
 
     /// The growth of the selected session, once loaded.
@@ -596,6 +636,17 @@ extension ContextSnapshot {
 enum Format {
     static func tokens(_ n: Int) -> String {
         n >= 1000 ? String(format: "%.1fk", Double(n) / 1000) : "\(n)"
+    }
+
+    /// Always in thousands with one decimal, so a legend of them adds up: "0.1k", "31.7k".
+    static func k(_ n: Int) -> String { String(format: "%.1fk", Double(n) / 1000) }
+
+    /// "+1.2k", "−31.6k".
+    static func signed(_ n: Int) -> String { (n > 0 ? "+" : n < 0 ? "−" : "±") + k(abs(n)) }
+
+    /// "7 Oct 15:00"
+    static func dateTime(_ date: Date) -> String {
+        date.formatted(.dateTime.day().month(.abbreviated).hour().minute())
     }
 
     static func relative(_ date: Date?) -> String {

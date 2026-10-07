@@ -89,7 +89,8 @@ is listed but left unread until you give Context Lens Full Disk Access; the side
 row that opens that setting, instead of a privacy prompt per folder.
 
 It writes only to `~/.context-lens/` (generated preset settings, caches such as
-`~/.context-lens/skills/`, health reports), the
+`~/.context-lens/skills/`, `/context` measurement history under `~/.context-lens/context/`,
+health reports), the
 optional `~/.local/bin/context-lens` link, and the app's own preferences. It never edits a file
 the harnesses read.
 

@@ -15,7 +15,9 @@ func runGrowth(_ opts: Options) {
     }
     guard let session else { fail("no Claude Code session matches \(query)") }
     guard let growth = ContextGrowthReader().read(session.file) else { fail("the transcript records no API usage") }
-    emit(GrowthOut(session, growth: growth, estimated: ClaudeSessionParser().parse(session).startingTokens, all: opts.flags["all"] != nil))
+    let snapshot = ClaudeSessionParser().parse(session)
+    let attribution = MeasuredContextStore().attribute(snapshot, growth: growth, cwd: session.cwd)
+    emit(GrowthOut(session, growth: growth, estimated: snapshot.startingTokens, attribution: attribution, all: opts.flags["all"] != nil))
 }
 
 struct GrowthOut: Encodable {
@@ -31,13 +33,17 @@ struct GrowthOut: Encodable {
     var measuredFirstCall: Int?
     /// Measured minus what the transcript shows: tool definitions and the harness prompt.
     var notInTranscript: Int?
+    /// The first call segment by segment: the transcript's estimates, the folder's /context
+    /// measurement nearest the session start, and the unattributed rest.
+    var attribution: ContextAttribution?
     var peak: Int, last: Int?, callCount: Int
     var compactions: [ContextGrowth.Compaction]
     var topJumps: [Jump]
     /// Every call, with `--all`.
     var calls: [ContextGrowth.Call]?
 
-    init(_ s: SessionSummary, growth g: ContextGrowth, estimated: Int, all: Bool) {
+    init(_ s: SessionSummary, growth g: ContextGrowth, estimated: Int, attribution: ContextAttribution?, all: Bool) {
+        self.attribution = attribution
         session = s.id; title = s.title; cwd = s.cwd; entrypoint = g.entrypoint; model = g.model
         estimatedBeforeFirstMessage = estimated; firstMessage = g.firstMessageTokens
         measuredFirstCall = g.firstCall; notInTranscript = g.hiddenTokens(estimated: estimated)

@@ -79,6 +79,30 @@ several times with `-p` / `exec resume` and reading the usage each turn reported
   (resuming under a preset, editing a file a session already loaded, switching a session's model)
   must say so and ask first.
 
+## Measured context
+
+Checked on 2026-10-07 against Claude Code 2.1.281 by running `claude -p "/context"` and then a
+one-word `-p` prompt with `--output-format json` in the same folder and clean environment, and
+comparing the first call's usage with what `/context` counted.
+
+- `/context` counts the harness prompt, built-in tools, MCP tool schemas per server, instruction
+  files, the skill listing and custom agents. It doesn't count MCP server instructions or the
+  built-in subagent listing, which go into the first message.
+- Its count of built-in tools depends on how the run started. Runs of the same setup reported
+  16.0k, 16.4k, 19.6k and 20.3k for System tools; with tool search (1M-context model) it reports
+  10k. The first call of a one-word prompt was 11.0k larger than `/context`'s total with tool
+  search on, 4.6k larger with an MCP server and tool search off, and 0.3k larger with neither.
+- Each `/context` run is recorded in the transcript as a `system` entry with subtype
+  `local_command` and a `contextUsage` object with exact counts (`categories`, `mcp_tools` with
+  `server_name`, `memory_files`, `skills`, `agents`). The printed table rounds to 0.1k. Context
+  Lens adds these runs to a folder's measurement history.
+- `/context` names plugin MCP servers `plugin_<plugin>_<server>`; transcripts name the same server
+  `plugin:<plugin>:<server>`.
+- An MCP server that connects slowly can be missing from a `-p` measurement. A measurement taken
+  13 seconds later in the folder above had it.
+- Transcript text runs at about 2.9 characters per token for instruction files and skill listings,
+  not 4. Context Lens scales its estimates of a session by `/context`'s count of the same files.
+
 ## Worktree command guard
 
 Read from the Claude Code 2.1.286 binary on 2026-10-04 (the CLI and the copy the desktop app runs

@@ -30,9 +30,10 @@ Usage:
   context-lens growth <transcript|id> [--all]             Claude Code: the first call's measured context against the transcript's
                                                           estimate, compactions, and the calls where the context grew most
                                                           (--all: every call)
-  context-lens measure [<dir>] [--cached]                 Claude Code: run claude -p "/context" in a folder for the real token
-                                                          counts, MCP tool schemas per server included. Cached in
-                                                          ~/.context-lens/context/ (--cached: don't run, read the cache)
+  context-lens measure [<dir>] [--cached|--history]       Claude Code: run claude -p "/context" in a folder for the real token
+                                                          counts, MCP tool schemas per server included. Kept as history in
+                                                          ~/.context-lens/context/, with /context runs found in transcripts
+                                                          (--cached: the latest, without running; --history: all of them)
   context-lens --help
 
 Options:
@@ -48,7 +49,7 @@ struct Options {
         while let a = it.next() {
             if a.hasPrefix("--") {
                 let key = String(a.dropFirst(2))
-                if key == "help" || key == "all" || key == "cached" || key == "json" || key == "no-classify" || key == "dry-run" { flags[key] = "true" } else { flags[key] = it.next() ?? "" }
+                if key == "help" || key == "all" || key == "cached" || key == "history" || key == "json" || key == "no-classify" || key == "dry-run" { flags[key] = "true" } else { flags[key] = it.next() ?? "" }
             } else {
                 positional.append(a)
             }
@@ -201,8 +202,12 @@ case "growth":
     runGrowth(opts)
 case "measure":
     let store = MeasuredContextStore()
-    if opts.flags["cached"] != nil {
-        guard let m = store.cached(dir.path) else { fail("no measurement cached for \(dir.path)") }
+    if opts.flags["history"] != nil {
+        store.harvest(around: dir.path)
+        emit(store.history(dir.path).map(MeasuredOut.init))
+    } else if opts.flags["cached"] != nil {
+        store.harvest(around: dir.path)
+        guard let m = store.cached(dir.path) else { fail("no measurement of \(dir.path)") }
         emit(MeasuredOut(m))
     } else {
         do { emit(MeasuredOut(try store.measure(dir.path))) } catch { fail("\(error)") }
@@ -216,8 +221,10 @@ struct MeasuredOut: Encodable {
     /// Harness prompt, built-in tools and MCP tool schemas: what no file shows.
     var notInFiles: Int
     var mcpServers: [MeasuredContext.Row]
+    /// The same segments the app's bar shows.
+    var attribution: ContextAttribution
 
     init(_ m: MeasuredContext) {
-        measured = m; notInFiles = m.notInFiles; mcpServers = m.mcpServers
+        measured = m; notInFiles = m.notInFiles; mcpServers = m.mcpServers; attribution = .measured(m)
     }
 }
