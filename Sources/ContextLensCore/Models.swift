@@ -153,7 +153,8 @@ public struct ContextItem: Identifiable, Hashable, Codable, Sendable {
 }
 
 public enum TokenEstimate {
-    public static func tokens(_ text: String) -> Int { (text.utf8.count + 3) / 4 }
+    public static func tokens(_ text: String) -> Int { tokens(chars: text.utf8.count) }
+    public static func tokens(chars: Int) -> Int { (chars + 3) / 4 }
 }
 
 public struct ContextSnapshot: Sendable {

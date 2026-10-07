@@ -92,7 +92,9 @@ public struct ClaudeSessionParser: Sendable {
                 let names = a["addedNames"] as? [String] ?? []
                 for (i, block) in (a["addedBlocks"] as? [String] ?? []).enumerated() {
                     let name = i < names.count ? names[i] : Self.heading(block, fallback: "MCP server")
-                    add(ContextItem(id: "mcp|\(name)", kind: .mcp, title: name, scope: "Server instructions", content: block, load: .always))
+                    var item = ContextItem(id: "mcp|\(name)", kind: .mcp, title: name, scope: "Server instructions", content: block, load: .always)
+                    item.note = "Instructions only. The server's tool schemas are sent with the tool definitions, which the transcript does not record."
+                    add(item)
                 }
             case "agent_listing_delta":
                 let lines = (a["addedLines"] as? [String] ?? []).joined(separator: "\n")

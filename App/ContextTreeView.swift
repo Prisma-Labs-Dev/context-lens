@@ -11,13 +11,16 @@ struct ContextTreeView: View {
             VStack(spacing: 0) {
                 if let s = model.selectedSession {
                     SessionBanner(session: s, snapshot: snap)
-                    if let skills = model.sessionSkills, skills.id == s.id { SessionSkillsSection(skills: skills) }
                 } else if !model.sessionsHere.isEmpty {
                     SkillsHint()
                 }
                 if model.presetIsActive { PresetBar() }
                 SummaryStrip(snapshot: snap)
                 Rectangle().fill(Theme.hairline).frame(height: 1)
+                if let s = model.selectedSession {
+                    if let growth = model.growth { ContextGrowthSection(growth: growth) }
+                    if let skills = model.sessionSkills, skills.id == s.id { SessionSkillsSection(skills: skills) }
+                }
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
@@ -217,30 +220,114 @@ struct SessionSkillRow: View {
     }
 }
 
-/// Token total, a budget bar by kind, and the problems filter.
+/// Token totals, a budget bar by kind, and the problems filter. Where Claude Code reported a real
+/// number (a recorded session's API usage, or `/context` for Now), that leads and the estimate
+/// from files and transcript is secondary.
 struct SummaryStrip: View {
     @Environment(AppModel.self) private var model
     var snapshot: ContextSnapshot
 
     var body: some View {
         @Bindable var model = model
+        let growth = model.presetIsActive ? nil : model.growth
+        let measured = model.presetIsActive || !model.measuredApplies ? nil : model.measured
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if model.presetIsActive, let base = model.baseSnapshot, base.startingTokens != snapshot.startingTokens {
-                    Text("≈\(Format.tokens(base.startingTokens))").font(.system(size: 13)).monospacedDigit().foregroundStyle(Theme.ink3).strikethrough()
-                    Image(systemName: "arrow.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.ink3)
+                if let growth, let first = growth.firstCall {
+                    Text(Format.tokens(first)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                    Text("measured on the first call").font(Theme.small).foregroundStyle(Theme.ink2)
+                    Text(sessionFigures(growth)).font(Theme.small).monospacedDigit().foregroundStyle(Theme.ink3).lineLimit(1)
+                } else if let measured {
+                    Text(Format.tokens(measured.used)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                    Text("measured by claude /context").font(Theme.small).foregroundStyle(Theme.ink2)
+                    MeasureButton()
+                } else {
+                    if model.presetIsActive, let base = model.baseSnapshot, base.startingTokens != snapshot.startingTokens {
+                        Text("≈\(Format.tokens(base.startingTokens))").font(.system(size: 13)).monospacedDigit().foregroundStyle(Theme.ink3).strikethrough()
+                        Image(systemName: "arrow.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.ink3)
+                    }
+                    Text("≈\(Format.tokens(snapshot.startingTokens))").font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                        .foregroundStyle(model.presetIsActive ? Theme.preset : Theme.ink)
+                    Text(model.presetIsActive ? "tokens with \(model.preset.name)" : "tokens before the first message").font(Theme.small).foregroundStyle(Theme.ink2)
+                    if model.measuredApplies, !model.presetIsActive { MeasureButton() }
                 }
-                Text("≈\(Format.tokens(snapshot.startingTokens))").font(.system(size: 13, weight: .semibold)).monospacedDigit()
-                    .foregroundStyle(model.presetIsActive ? Theme.preset : Theme.ink)
-                Text(model.presetIsActive ? "tokens with \(model.preset.name)" : "tokens before the first message").font(Theme.small).foregroundStyle(Theme.ink2)
                 Spacer()
                 ProblemsToggle(count: snapshot.problemCount, on: $model.onlyProblems)
             }
-            BudgetBar(snapshot: snapshot)
+            if let growth, growth.firstCall != nil {
+                Text("≈\(Format.tokens(snapshot.startingTokens)) of it estimated from the transcript before the first message · API usage, \(growth.harnessLabel)")
+                    .font(Theme.small).foregroundStyle(Theme.ink3).lineLimit(1).truncationMode(.middle)
+            } else if let measured {
+                Text("≈\(Format.tokens(snapshot.startingTokens)) estimated from files · Claude Code CLI, \(Format.relative(measured.measuredAt))")
+                    .font(Theme.small).foregroundStyle(Theme.ink3).lineLimit(1)
+                    .help("Measured in a clean login shell in this folder. Claude Desktop adds its own MCP tools, so a Desktop session starts larger.")
+            }
+            if let error = model.measureError {
+                Text(error).font(Theme.small).foregroundStyle(Theme.stale).lineLimit(2)
+            }
+            BudgetBar(snapshot: snapshot, extra: extraParts(growth: growth, measured: measured))
+            if let growth, let hidden = growth.hiddenTokens(estimated: snapshot.startingTokens), hidden > 0 {
+                Text("Not in transcript ≈\(Format.tokens(hidden)): built-in tools, MCP tool schemas and the harness prompt. Breakdown available for Now only.")
+                    .font(Theme.small).foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
+            } else if let measured, !measured.mcpServers.isEmpty {
+                Text("MCP tool schemas: " + measured.mcpServers.map { "\($0.name) \(Format.tokens($0.tokens))" }.joined(separator: " · "))
+                    .font(Theme.small).monospacedDigit().foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.top, 10)
         .padding(.bottom, 10)
+    }
+
+    /// "· last 92.1k · peak 140.2k · 2 compactions"
+    private func sessionFigures(_ g: ContextGrowth) -> String {
+        var parts: [String] = []
+        if let last = g.last, g.calls.count > 1 { parts.append("last \(Format.tokens(last))") }
+        if g.peak != g.last { parts.append("peak \(Format.tokens(g.peak))") }
+        if !g.compactions.isEmpty { parts.append("\(g.compactions.count) compaction\(g.compactions.count == 1 ? "" : "s")") }
+        return parts.map { "· " + $0 }.joined(separator: " ")
+    }
+
+    /// What the bar adds to the estimate: the measured part no file or transcript shows.
+    private func extraParts(growth: ContextGrowth?, measured: MeasuredContext?) -> [BudgetBar.Part] {
+        if let growth, let hidden = growth.hiddenTokens(estimated: snapshot.startingTokens) {
+            return [
+                .init(id: "first-message", title: "First message", tokens: growth.firstMessageTokens, color: Theme.ink2),
+                .init(id: "hidden", title: "Not in transcript: built-in tools, MCP tool schemas, harness prompt", tokens: hidden, color: Theme.ink3.opacity(0.45)),
+            ]
+        }
+        if let measured {
+            return [
+                .init(id: "system-prompt", title: "Harness prompt", tokens: measured.category("System prompt"), color: Theme.ink3.opacity(0.75)),
+                .init(id: "system-tools", title: "Built-in tools", tokens: measured.category("System tools"), color: Theme.ink3.opacity(0.5)),
+                .init(id: "mcp-tools", title: "MCP tool schemas", tokens: measured.category("MCP tools"), color: Theme.ink3.opacity(0.3)),
+            ]
+        }
+        return []
+    }
+}
+
+/// Runs `claude -p "/context"` for the folder, or again to refresh it.
+struct MeasureButton: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        Button { model.measure() } label: {
+            HStack(spacing: 3) {
+                if model.measuring {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: model.measured == nil ? "gauge.with.dots.needle.33percent" : "arrow.clockwise").font(.system(size: 9.5))
+                }
+                Text(model.measured == nil ? "Measure" : "Refresh")
+            }
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(Theme.ink2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(model.measuring)
+        .help("Run claude -p \"/context\" in this folder: a few seconds, no tokens. Counts the built-in tools and MCP tool schemas no file shows.")
     }
 }
 
@@ -268,10 +355,22 @@ struct ProblemsToggle: View {
 }
 
 struct BudgetBar: View {
-    var snapshot: ContextSnapshot
+    struct Part {
+        var id: String
+        var title: String
+        var tokens: Int
+        var color: Color
+    }
 
-    var parts: [(kind: ContextKind, tokens: Int)] {
-        snapshot.sections.map { ($0.kind, $0.items.reduce(0) { $0 + $1.startingTokens }) }.filter { $0.1 > 0 }
+    var snapshot: ContextSnapshot
+    /// Measured parts no file or transcript shows, after the kinds.
+    var extra: [Part] = []
+
+    var parts: [Part] {
+        let kinds = snapshot.sections.map { s in
+            Part(id: s.kind.rawValue, title: s.kind.title, tokens: s.items.reduce(0) { $0 + $1.startingTokens }, color: s.kind.color)
+        }
+        return (kinds + extra).filter { $0.tokens > 0 }
     }
 
     var body: some View {
@@ -280,21 +379,21 @@ struct BudgetBar: View {
         VStack(alignment: .leading, spacing: 6) {
             GeometryReader { geo in
                 HStack(spacing: 1) {
-                    ForEach(parts, id: \.kind) { part in
+                    ForEach(parts, id: \.id) { part in
                         Rectangle()
-                            .fill(part.kind.color)
+                            .fill(part.color)
                             .frame(width: max(2, (geo.size.width - CGFloat(parts.count - 1)) * CGFloat(part.tokens) / CGFloat(total)))
-                            .help("\(part.kind.title): ≈\(Format.tokens(part.tokens)) tokens")
+                            .help("\(part.title): ≈\(Format.tokens(part.tokens)) tokens")
                     }
                 }
             }
             .frame(height: 4)
             .clipShape(RoundedRectangle(cornerRadius: 2))
             FlowLayout(spacing: 10, lineSpacing: 3) {
-                ForEach(parts, id: \.kind) { part in
+                ForEach(parts, id: \.id) { part in
                     HStack(spacing: 4) {
-                        Circle().fill(part.kind.color).frame(width: 6, height: 6)
-                        Text(part.kind.title).foregroundStyle(Theme.ink2)
+                        Circle().fill(part.color).frame(width: 6, height: 6)
+                        Text(part.title).foregroundStyle(Theme.ink2)
                         Text(Format.tokens(part.tokens)).foregroundStyle(Theme.ink3).monospacedDigit()
                     }
                     .font(.system(size: 10.5))
@@ -397,6 +496,8 @@ struct TreeRow: View {
     }
 
     private var location: String? {
+        // A session's MCP rows hold the server's instructions; its tool schemas are not in the transcript.
+        if item.kind == .mcp, item.scope == "Server instructions" { return "instructions only" }
         guard isFile, let slash = item.title.lastIndex(of: "/") else { return nil }
         return String(item.title[..<slash])
     }

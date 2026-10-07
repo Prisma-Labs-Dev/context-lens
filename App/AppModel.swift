@@ -68,6 +68,14 @@ final class AppModel {
     /// A skill the Skills window should select, set by clicking a skill in a session.
     var skillsRequest: String?
     private var skillsTask: Task<Void, Never>?
+    /// How the selected Claude Code session's context grew, from the API usage it recorded.
+    private(set) var sessionGrowth: (id: String, growth: ContextGrowth)?
+
+    // Measured
+    /// `claude -p "/context"` for the selected folder, cached per folder and refreshed on demand.
+    private(set) var measured: MeasuredContext?
+    private(set) var measuring = false
+    private(set) var measureError: String?
 
     let home = FileManager.default.homeDirectoryForCurrentUser
     private var openLatestSessionOnLoad = false
@@ -288,6 +296,7 @@ final class AppModel {
         let directory = selectedDirectory
         let session = selectedSession
         reloadSessionSkills(session)
+        loadMeasured()
         guard directory != nil || session != nil, !needsAccess(session?.cwd ?? directory ?? "") else {
             loadingSnapshot = false
             baseSnapshot = nil
@@ -319,16 +328,53 @@ final class AppModel {
 
     private func reloadSessionSkills(_ session: SessionSummary?) {
         skillsTask?.cancel()
-        guard let session else { sessionSkills = nil; highlightedSkill = nil; return }
+        guard let session else { sessionSkills = nil; sessionGrowth = nil; highlightedSkill = nil; return }
         if sessionSkills?.id != session.id { sessionSkills = nil }
+        if sessionGrowth?.id != session.id { sessionGrowth = nil }
         skillsTask = Task {
-            let found = await Task.detached(priority: .userInitiated) { () -> SessionSkills? in
+            let found = await Task.detached(priority: .userInitiated) { () -> (SessionSkills?, ContextGrowth?) in
                 let scanner = SkillUsageScanner()
-                return scanner.session(files: scanner.scan(transcript: session.file, harness: session.harness.rawValue))
+                let skills = scanner.session(files: scanner.scan(transcript: session.file, harness: session.harness.rawValue))
+                return (skills, session.harness == .claude ? ContextGrowthReader().read(session.file) : nil)
             }.value
             guard !Task.isCancelled else { return }
-            sessionSkills = found
+            sessionSkills = found.0
+            sessionGrowth = found.1.map { (session.id, $0) }
         }
+    }
+
+    /// The measurement applies to Claude Code's Now view of the selected folder.
+    var measuredApplies: Bool { source == .now && harness == .claude && selectedDirectory != nil }
+
+    private func loadMeasured() {
+        measureError = nil
+        guard measuredApplies, let dir = selectedDirectory else { measured = nil; return }
+        if measured?.folder != dir { measured = MeasuredContextStore().cached(dir) }
+    }
+
+    /// Runs `claude -p "/context"` in the selected folder. It takes a few seconds and costs no
+    /// tokens: the command never reaches the model.
+    func measure() {
+        guard measuredApplies, let dir = selectedDirectory, !measuring else { return }
+        measuring = true
+        measureError = nil
+        Task {
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<MeasuredContext, Error> in
+                Result { try MeasuredContextStore().measure(dir) }
+            }.value
+            measuring = false
+            guard selectedDirectory == dir else { return }
+            switch result {
+            case .success(let m): measured = m
+            case .failure(let e): measureError = "\(e)"
+            }
+        }
+    }
+
+    /// The growth of the selected session, once loaded.
+    var growth: ContextGrowth? {
+        guard let s = selectedSession, let g = sessionGrowth, g.id == s.id else { return nil }
+        return g.growth
     }
 
     // MARK: - Presets
