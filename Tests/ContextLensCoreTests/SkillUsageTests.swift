@@ -117,6 +117,7 @@ struct SkillFixture {
     func writeCopilot() throws {
         let lines = [
             json(["type": "session.start", "timestamp": ts(3), "data": ["context": ["cwd": f.project.path]]]),
+            json(["type": "user.message", "timestamp": ts(3), "data": ["content": "Brew some tea\nthen rest"]]),
             json(["type": "skill.invoked", "timestamp": ts(3), "data": ["name": "brew-tea", "trigger": "user-invoked",
                   "path": home.path + "/.copilot/skills/brew-tea/SKILL.md"]]),
         ]
@@ -201,6 +202,63 @@ struct SkillFixture {
         try handle.close()
         let third = scanner.scan()
         #expect(third.parsed == 1 && third.cached == 1)
+    }
+
+    @Test func listsSkillsPerSession() throws {
+        let s = try SkillFixture()
+        defer { s.f.cleanup() }
+        try s.writeClaude()
+        try s.writeCodex()
+        try s.writeCopilot()
+        let scanner = SkillUsageScanner(env: s.f.env, cacheFile: s.cache)
+        let files = scanner.scan().files
+        let installed = SkillInventory(env: s.f.env).installed(folders: [s.f.project.path])
+        let sessions = SkillReportBuilder.sessions(files: files, installed: installed,
+                                                   since: s.now.addingTimeInterval(-7 * 86400), folder: nil)
+        #expect(Set(sessions.map(\.id)) == ["claude:s1", "codex:01a0e1e8-87be-7593-a572-c77c2bd250c5", "copilot:cp-1"])
+
+        // The whole session counts, including the use from before the window, and its subagent.
+        let claude = try #require(sessions.first { $0.id == "claude:s1" })
+        let skills = Dictionary(uniqueKeysWithValues: claude.skills.map { ($0.name, $0) })
+        #expect(claude.skills.first?.name == "brew-tea")
+        #expect(skills["brew-tea"]?.uses == 3)
+        #expect(skills["brew-tea"]?.triggers == ["model": 2, "subagent": 1])
+        #expect(skills["sort-mail"]?.triggers == ["user": 1])
+        #expect(skills["sort-mail"]?.installed == true)
+        #expect(skills["garden:missing"]?.failures == 1)
+        #expect(skills["garden:missing"]?.installed == false)
+        #expect(skills["water-plants"]?.uses == 1)
+        #expect(skills["model"] == nil)
+        #expect(claude.cwd == s.f.project.path)
+        #expect(claude.started != nil)
+
+        let copilot = try #require(sessions.first { $0.id == "copilot:cp-1" })
+        #expect(copilot.title == "Brew some tea")
+        #expect(copilot.skills.map(\.name) == ["brew-tea"])
+
+        // Only sessions in the folder.
+        let elsewhere = SkillReportBuilder.sessions(files: files, installed: installed, since: nil,
+                                                    folder: s.home.appending(path: "other").path)
+        #expect(elsewhere.isEmpty)
+    }
+
+    @Test func findsOneSessionByIdOrPath() throws {
+        let s = try SkillFixture()
+        defer { s.f.cleanup() }
+        try s.writeClaude()
+        try s.writeCodex()
+        try s.writeCopilot()
+        let scanner = SkillUsageScanner(env: s.f.env, cacheFile: s.cache)
+        #expect(scanner.session("claude:s1")?.skills.count == 6)
+        #expect(scanner.session("claude:s1")?.title != nil)
+        #expect(scanner.session("01a0e1e8")?.skills.map(\.name) == ["pick-font"])
+        #expect(scanner.session("cp-1")?.id == "copilot:cp-1")
+        let path = s.home.appending(path: ".claude/projects/-Users-me-code-app/s1.jsonl").path
+        #expect(scanner.session(path)?.id == "claude:s1")
+        // Read directly, as the session view does: the subagent is included.
+        let direct = scanner.session(files: scanner.scan(transcript: URL(filePath: path), harness: "claude"))
+        #expect(direct?.skills.first { $0.name == "brew-tea" }?.triggers == ["model": 2, "subagent": 1])
+        #expect(scanner.session("nothing-like-this") == nil)
     }
 
     @Test func followsSymlinkedSkillsFolder() throws {

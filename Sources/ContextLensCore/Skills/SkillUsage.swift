@@ -53,6 +53,10 @@ public struct SkillFileScan: Codable, Sendable {
     /// Skill names Claude Code recorded in `invoked_skills`, which tell skill slash commands apart
     /// from built-in ones such as `/model`.
     public var invoked: [String] = []
+    /// The first timestamp in the file.
+    public var started: Date?
+    /// The first prompt, for harnesses Past sessions does not list (Copilot CLI).
+    public var title: String?
 }
 
 /// Every transcript's skill events, read from the cache where the file is unchanged.
@@ -71,7 +75,7 @@ public struct SkillUsageScanner: Sendable {
     public var copilotHome: URL
     public var cacheFile: URL
 
-    static let cacheVersion = 1
+    static let cacheVersion = 2
 
     public init(env: HarnessEnvironment = .current, cacheFile: URL? = nil) {
         self.env = env
@@ -117,15 +121,9 @@ public struct SkillUsageScanner: Sendable {
             parsed.deinitialize()
             parsed.deallocate()
         }
-        let env = env
         let jobs = todo
         DispatchQueue.concurrentPerform(iterations: jobs.count) { j in
-            let s = sources[jobs[j]]
-            parsed[j] = switch s.harness {
-            case "claude": ClaudeSkillParser(file: s.file, modified: s.modified, home: env.home.path).parse()
-            case "codex": CodexSkillParser(file: s.file, modified: s.modified, home: env.home.path).parse()
-            default: CopilotSkillParser(file: s.file, modified: s.modified).parse()
-            }
+            parsed[j] = parse(sources[jobs[j]])
         }
         for (j, i) in todo.enumerated() {
             results[i] = parsed[j]
@@ -139,6 +137,27 @@ public struct SkillUsageScanner: Sendable {
         }
         return SkillScan(files: results.compactMap { $0 }, parsed: todo.count, cached: sources.count - todo.count,
                          seconds: Date().timeIntervalSince(started))
+    }
+
+    func parse(_ s: Source) -> SkillFileScan? {
+        switch s.harness {
+        case "claude": ClaudeSkillParser(file: s.file, modified: s.modified, home: env.home.path).parse()
+        case "codex": CodexSkillParser(file: s.file, modified: s.modified, home: env.home.path).parse()
+        default: CopilotSkillParser(file: s.file, modified: s.modified).parse()
+        }
+    }
+
+    /// One transcript and, for Claude Code, its subagent transcripts, read directly without the cache.
+    public func scan(transcript file: URL, harness: String) -> [SkillFileScan] {
+        var urls = [file]
+        if harness == "claude" {
+            let subagents = file.deletingPathExtension().appending(path: "subagents")
+            urls += FileUtil.children(subagents).filter { $0.pathExtension == "jsonl" }
+        }
+        return urls.compactMap { url in
+            let modified = FileUtil.modified(url) ?? .distantPast
+            return parse(Source(file: url, harness: harness, size: 0, modified: modified))
+        }
     }
 
     func files(since: Date?) -> [Source] {
@@ -282,6 +301,7 @@ struct ClaudeSkillParser {
         var pending: [String: Int] = [:]
 
         scanner.forEach { line in
+            if out.started == nil { out.started = LineScanner.timestamp(line) }
             if out.cwd.isEmpty, LineScanner.has(line, "\"cwd\":\""), let obj = LineScanner.json(line), let cwd = obj["cwd"] as? String {
                 out.cwd = cwd
             }
@@ -352,6 +372,7 @@ struct CodexSkillParser {
         let id = String(file.deletingPathExtension().lastPathComponent.suffix(36))
         var out = SkillFileScan(harness: "codex", session: "codex:" + id, file: file.path, cwd: "", modified: modified, events: [])
         scanner.forEach { line in
+            if out.started == nil { out.started = LineScanner.timestamp(line) }
             if out.cwd.isEmpty, LineScanner.has(line, "\"session_meta\""), let obj = LineScanner.json(line), obj["type"] as? String == "session_meta" {
                 out.cwd = (obj["payload"] as? [String: Any])?["cwd"] as? String ?? ""
                 return true
@@ -406,6 +427,13 @@ struct CopilotSkillParser {
         let id = file.deletingLastPathComponent().lastPathComponent
         var out = SkillFileScan(harness: "copilot", session: "copilot:" + id, file: file.path, cwd: "", modified: modified, events: [])
         scanner.forEach { line in
+            if out.started == nil { out.started = LineScanner.timestamp(line) }
+            if out.title == nil, LineScanner.has(line, "\"type\":\"user.message\""),
+               let obj = LineScanner.json(line), obj["type"] as? String == "user.message",
+               let text = (obj["data"] as? [String: Any])?["content"] as? String {
+                let first = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+                out.title = String(first.trimmingCharacters(in: .whitespaces).prefix(120))
+            }
             if out.cwd.isEmpty, LineScanner.has(line, "\"type\":\"session.start\"") {
                 if let obj = LineScanner.json(line), let ctx = (obj["data"] as? [String: Any])?["context"] as? [String: Any] {
                     out.cwd = ctx["cwd"] as? String ?? ""

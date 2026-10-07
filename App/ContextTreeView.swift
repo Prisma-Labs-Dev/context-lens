@@ -9,7 +9,10 @@ struct ContextTreeView: View {
     var body: some View {
         if let snap = model.snapshot {
             VStack(spacing: 0) {
-                if let s = model.selectedSession { SessionBanner(session: s, snapshot: snap) }
+                if let s = model.selectedSession {
+                    SessionBanner(session: s, snapshot: snap)
+                    if let skills = model.sessionSkills, skills.id == s.id { SessionSkillsSection(skills: skills) }
+                }
                 if model.presetIsActive { PresetBar() }
                 SummaryStrip(snapshot: snap)
                 Rectangle().fill(Theme.hairline).frame(height: 1)
@@ -84,6 +87,84 @@ struct SessionBanner: View {
         .padding(.vertical, 9)
         .background(Theme.changed.opacity(0.08))
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.hairline).frame(height: 1) }
+    }
+}
+
+/// The skills a past session used, in order of first use. A skill opens in the Skills window.
+struct SessionSkillsSection: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+    var skills: SessionSkills
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles").font(.system(size: 10)).foregroundStyle(Theme.ink3)
+                Text("Skills used").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.ink2)
+                Text(skills.skills.isEmpty ? "none" : "\(skills.skills.count)").font(Theme.small).foregroundStyle(Theme.ink3)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 7)
+            .padding(.bottom, skills.skills.isEmpty ? 7 : 3)
+            ForEach(skills.skills) { skill in
+                SessionSkillRow(skill: skill, started: skills.started, highlighted: model.highlightedSkill == skill.name) {
+                    model.skillsRequest = skill.name
+                    openWindow(id: "skills")
+                    NSApp.activate()
+                }
+            }
+        }
+        .padding(.bottom, skills.skills.isEmpty ? 0 : 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .bottom) { Rectangle().fill(Theme.hairline).frame(height: 1) }
+    }
+}
+
+/// One skill in a session: name, how it ran, how often, and when it first ran.
+struct SessionSkillRow: View {
+    var skill: SessionSkill
+    var started: Date?
+    var highlighted = false
+    var action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Text(skill.name).lineLimit(1)
+            if !skill.installed { Text("not installed").font(Theme.small).foregroundStyle(Theme.ink3) }
+            if skill.failures > 0 { Text("\(skill.failures) failed").font(Theme.small).foregroundStyle(Theme.removed) }
+            Spacer(minLength: 6)
+            Text(triggers).font(Theme.small).foregroundStyle(Theme.ink2).lineLimit(1)
+            Text("×\(skill.uses)").font(Theme.monoSmall).monospacedDigit().foregroundStyle(Theme.ink2).frame(minWidth: 26, alignment: .trailing)
+            Text(when).font(Theme.monoSmall).monospacedDigit().foregroundStyle(Theme.ink3).frame(minWidth: 96, alignment: .trailing)
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 12)
+        .frame(height: 22)
+        .background(highlighted ? Theme.selection : hovering ? Theme.hover : .clear)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: action)
+        .onHover { hovering = $0 }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { action() }
+        .help("Show \(skill.name) in Skills")
+    }
+
+    private var triggers: String {
+        skill.triggers.sorted { ($0.value, $1.key) > ($1.value, $0.key) }
+            .map { SkillEvent.Trigger(rawValue: $0.key)?.label ?? $0.key }
+            .joined(separator: ", ")
+    }
+
+    /// Time of first use, and how far into the session that was.
+    private var when: String {
+        guard let first = skill.firstUsed else { return "" }
+        let time = first.formatted(date: .omitted, time: .shortened)
+        guard let started, first >= started else { return time }
+        let minutes = Int(first.timeIntervalSince(started) / 60)
+        let offset = minutes < 60 ? "+\(minutes)m" : "+\(minutes / 60)h\(String(format: "%02d", minutes % 60))"
+        return "\(time) (\(offset))"
     }
 }
 

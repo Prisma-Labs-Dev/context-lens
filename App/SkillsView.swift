@@ -23,11 +23,24 @@ final class SkillsModel {
         case unused(String)
     }
 
+    enum Mode: String, CaseIterable, Identifiable {
+        case skills = "By skill", sessions = "By session"
+        var id: String { rawValue }
+    }
+
     var span: Span = .month { didSet { if loaded { rebuild() } } }
     var folder: String? { didSet { if loaded { rebuild() } } }
     var report: SkillReport?
     var selection: Selection?
+    var mode: Mode = .skills
+    /// Sessions active in the window, newest first, each with every skill it used.
+    var sessions: [SessionSkills] = []
+    var selectedSession: String?
+    var sessionQuery = ""
+    var onlySessionsWithSkills = true
     var loading = false
+    /// A skill asked for before the report that has it was built.
+    private var pendingSkill: String?
     private var files: [SkillFileScan] = []
     private var loaded = false
 
@@ -60,14 +73,39 @@ final class SkillsModel {
         Task.detached {
             let installed = SkillInventory().installed(folders: SkillReportBuilder.folders(files, since: since, folder: folder))
             let report = SkillReportBuilder.build(files: files, installed: installed, since: since, folder: folder)
+            let sessions = SkillReportBuilder.sessions(files: files, installed: installed, since: since, folder: folder)
             await MainActor.run {
                 // A newer window or folder replaced this build.
                 guard generation == self.generation else { return }
                 self.report = report
+                self.sessions = sessions
                 self.loading = false
+                if let skill = self.pendingSkill { self.reveal(skill: skill) }
             }
         }
     }
+
+    /// Selects a skill, widening the window and folder when the current ones do not have it.
+    func reveal(skill name: String) {
+        mode = .skills
+        guard let report else { pendingSkill = name; return }
+        if report.skills.contains(where: { $0.name == name }) {
+            selection = .used(name)
+            pendingSkill = nil
+        } else if report.unused.contains(where: { $0.name == name }) {
+            selection = .unused(name)
+            pendingSkill = nil
+        } else if span != .all || folder != nil {
+            pendingSkill = name
+            span = .all
+            folder = nil
+        } else {
+            selection = .used(name)
+            pendingSkill = nil
+        }
+    }
+
+    func session(_ id: String) -> SessionSkills? { sessions.first { $0.id == id } }
 
     func stat(_ name: String) -> SkillStat? { report?.skills.first { $0.name == name } }
     func unusedEntries(_ name: String) -> [InstalledSkill] { report?.unused.filter { $0.name == name } ?? [] }
@@ -81,6 +119,7 @@ final class SkillsModel {
 }
 
 struct SkillsView: View {
+    @Environment(AppModel.self) private var app
     @State private var model = SkillsModel()
 
     var body: some View {
@@ -95,7 +134,18 @@ struct SkillsView: View {
         .environment(model)
         .foregroundStyle(Theme.ink)
         .tint(Theme.claude)
-        .onAppear { model.load() }
+        .onAppear {
+            model.load()
+            takeRequest()
+        }
+        .onChange(of: app.skillsRequest) { takeRequest() }
+    }
+
+    /// A skill picked in a session in the main window.
+    private func takeRequest() {
+        guard let name = app.skillsRequest else { return }
+        app.skillsRequest = nil
+        model.reveal(skill: name)
     }
 }
 
@@ -108,7 +158,9 @@ struct SkillsList: View {
         VStack(spacing: 0) {
             SkillsHeader()
             Rectangle().fill(Theme.hairline).frame(height: 1)
-            if let r = model.report {
+            if model.mode == .sessions, model.report != nil {
+                SessionsList()
+            } else if let r = model.report {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ListSection(title: "Used", trailing: "\(r.skills.count) skills · \(r.sessions) sessions") {
@@ -156,7 +208,10 @@ struct SkillsHeader: View {
         @Bindable var model = model
         HStack(spacing: 8) {
             Image(systemName: "sparkles").font(.system(size: 12)).foregroundStyle(Theme.ink3)
-            Text("Skills").font(.system(size: 13, weight: .semibold))
+            Picker("", selection: $model.mode) {
+                ForEach(SkillsModel.Mode.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .labelsHidden().pickerStyle(.segmented).fixedSize()
             Picker("", selection: $model.span) {
                 ForEach(SkillsModel.Span.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -194,6 +249,9 @@ struct SkillRow<Content: View>: View {
             .contentShape(Rectangle())
             .onTapGesture { model.selection = selection }
             .onHover { hovering = $0 }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { model.selection = selection }
     }
 }
 
@@ -203,6 +261,18 @@ struct SkillsDetail: View {
     @Environment(SkillsModel.self) private var model
 
     var body: some View {
+        if model.mode == .sessions {
+            if let id = model.selectedSession, let s = model.session(id) {
+                SessionSkillsDetail(session: s)
+            } else {
+                Placeholder(text: "Pick a session.")
+            }
+        } else {
+            skillDetail
+        }
+    }
+
+    @ViewBuilder private var skillDetail: some View {
         switch model.selection {
         case .used(let name)?:
             if let s = model.stat(name) { SkillStatDetail(stat: s) } else { Placeholder(text: "No use of \(name) in this window.") }
@@ -235,7 +305,7 @@ struct SkillStatDetail: View {
             CountList(title: "Folders", counts: Dictionary(stat.folders.map { (($0.name as NSString).abbreviatingWithTildeInPath, $0.count) }, uniquingKeysWith: +), mono: true)
             VStack(alignment: .leading, spacing: 5) {
                 SectionHeader(title: "Recent sessions", trailing: "\(stat.examples.count) of \(stat.sessions)")
-                ForEach(stat.examples) { SkillSessionLine(session: $0) }
+                ForEach(stat.examples) { SkillSessionLine(session: $0, skill: stat.name) }
             }
             InstalledPaths(entries: stat.installed)
         }
@@ -286,21 +356,19 @@ struct SkillSessionLine: View {
     @Environment(AppModel.self) private var app
     @Environment(\.openWindow) private var openWindow
     var session: SkillSession
+    var skill: String
 
     var body: some View {
         let harness = Harness(rawValue: session.harness)
         HStack(spacing: 7) {
-            Circle().fill(session.harness == "claude" ? Theme.claude : session.harness == "codex" ? Theme.codex : Theme.ink3)
-                .frame(width: 6, height: 6)
+            Circle().fill(harnessColor(session.harness)).frame(width: 6, height: 6)
             Text(session.cwd.isEmpty ? session.id : URL(filePath: session.cwd).lastPathComponent).lineLimit(1)
             Text("\(session.time?.formatted(.dateTime.month(.abbreviated).day()) ?? "") · \(session.trigger.label)\(session.uses > 1 ? " ×\(session.uses)" : "")")
                 .font(Theme.small).foregroundStyle(Theme.ink3).lineLimit(1)
             Spacer(minLength: 6)
             if let harness, !session.cwd.isEmpty {
                 QuietButton(title: "Open", systemImage: "arrow.up.right") {
-                    app.select(harness: harness)
-                    app.select(directory: session.cwd)
-                    app.select(source: .session(session.id))
+                    app.open(session: session.id, harness: harness, cwd: session.cwd, skill: skill)
                     openWindow(id: "main")
                     NSApp.activate()
                 }
@@ -312,5 +380,133 @@ struct SkillSessionLine: View {
         }
         .font(.system(size: 12))
         .help(session.file)
+    }
+}
+
+// MARK: - By session
+
+/// Sessions in the window, newest first, with how many skills each used.
+struct SessionsList: View {
+    @Environment(SkillsModel.self) private var model
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        @Bindable var model = model
+        let titles = Dictionary(app.sessions.map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
+        let query = model.sessionQuery.trimmingCharacters(in: .whitespaces)
+        let rows = model.sessions.filter { s in
+            (!model.onlySessionsWithSkills || !s.skills.isEmpty)
+                && (query.isEmpty || [title(s, titles), s.cwd].contains { $0.localizedCaseInsensitiveContains(query) }
+                    || s.skills.contains { $0.name.localizedCaseInsensitiveContains(query) })
+        }
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                TextField("Filter by title, folder or skill", text: $model.sessionQuery)
+                    .textFieldStyle(.roundedBorder).controlSize(.small)
+                Toggle("With skills", isOn: $model.onlySessionsWithSkills).toggleStyle(.checkbox).controlSize(.small).fixedSize()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ListSection(title: "Sessions", trailing: "\(rows.count) of \(model.sessions.count)") {
+                        if rows.isEmpty {
+                            Text("No sessions match.").font(Theme.small).foregroundStyle(Theme.ink3).padding(.horizontal, 14)
+                        }
+                        ForEach(rows) { s in
+                            SessionListRow(session: s, title: title(s, titles))
+                        }
+                    }
+                }
+                .padding(.bottom, 12)
+            }
+        }
+    }
+
+    private func title(_ s: SessionSkills, _ titles: [String: String]) -> String {
+        titles[s.id] ?? s.title ?? "Untitled"
+    }
+}
+
+struct SessionListRow: View {
+    @Environment(SkillsModel.self) private var model
+    var session: SessionSkills
+    var title: String
+    @State private var hovering = false
+
+    var body: some View {
+        let selected = model.selectedSession == session.id
+        HStack(spacing: 7) {
+            Circle().fill(harnessColor(session.harness)).frame(width: 6, height: 6)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).lineLimit(1)
+                Text("\(session.cwd.isEmpty ? "no folder" : URL(filePath: session.cwd).lastPathComponent) · \(session.modified.formatted(.dateTime.month(.abbreviated).day().hour().minute()))")
+                    .font(Theme.small).foregroundStyle(Theme.ink3).lineLimit(1)
+            }
+            Spacer(minLength: 6)
+            Text(session.skills.isEmpty ? "–" : "\(session.skills.count)")
+                .font(Theme.monoSmall).monospacedDigit().foregroundStyle(session.skills.isEmpty ? Theme.ink3 : Theme.ink2)
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 14)
+        .frame(height: 34)
+        .background(selected ? Theme.selection : hovering ? Theme.hover : .clear)
+        .contentShape(Rectangle())
+        .onTapGesture { model.selectedSession = session.id }
+        .onHover { hovering = $0 }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { model.selectedSession = session.id }
+        .help(session.file)
+    }
+}
+
+func harnessColor(_ harness: String) -> Color {
+    harness == "claude" ? Theme.claude : harness == "codex" ? Theme.codex : Theme.ink3
+}
+
+/// One session's skills, in order of first use. A skill opens in the By skill view; the
+/// session opens in Past sessions.
+struct SessionSkillsDetail: View {
+    @Environment(SkillsModel.self) private var model
+    @Environment(AppModel.self) private var app
+    @Environment(\.openWindow) private var openWindow
+    var session: SessionSkills
+
+    var body: some View {
+        let title = app.sessions.first { $0.id == session.id }?.title ?? session.title ?? "Untitled"
+        DetailScroll {
+            Text(title).font(.system(size: 16, weight: .semibold)).lineLimit(3)
+            Facts(items: [
+                ("harness", session.harness),
+                ("folder", session.cwd.isEmpty ? "–" : (session.cwd as NSString).abbreviatingWithTildeInPath),
+                ("started", session.started?.formatted(.dateTime.month(.abbreviated).day().hour().minute()) ?? "–"),
+                ("last active", session.modified.formatted(.dateTime.month(.abbreviated).day().hour().minute())),
+            ])
+            HStack(spacing: 8) {
+                if let harness = Harness(rawValue: session.harness), !session.cwd.isEmpty {
+                    QuietButton(title: "Open in Past sessions", systemImage: "arrow.up.right") {
+                        app.open(session: session.id, harness: harness, cwd: session.cwd, skill: nil)
+                        openWindow(id: "main")
+                        NSApp.activate()
+                    }
+                }
+                QuietButton(title: "Reveal transcript", systemImage: "doc") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: session.file)])
+                }
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                SectionHeader(title: "Skills used", trailing: "\(session.skills.count)")
+                if session.skills.isEmpty {
+                    Text("This session used no skills. Listing them in its context does not count.")
+                        .font(Theme.small).foregroundStyle(Theme.ink3)
+                }
+                ForEach(session.skills) { skill in
+                    SessionSkillRow(skill: skill, started: session.started) { model.reveal(skill: skill.name) }
+                        .padding(.horizontal, -12)
+                }
+            }
+        }
     }
 }

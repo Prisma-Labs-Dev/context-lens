@@ -2,8 +2,13 @@ import ContextLensCore
 import Foundation
 
 /// `context-lens skills [--since 30d|all] [--cwd <dir>]`: which skills sessions used, and which
-/// installed skills none did.
+/// installed skills none did. `--session <transcript or id>`: the skills one session used.
 func runSkills(_ opts: Options) {
+    if let query = opts.flags["session"] {
+        guard let session = SkillUsageScanner().session(query) else { fail("no single session matches \(query)") }
+        emit(session)
+        return
+    }
     let window = opts.flags["since"] ?? "30d"
     var since: Date?
     if window != "all" {

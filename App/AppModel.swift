@@ -60,6 +60,15 @@ final class AppModel {
     var notice: String?
     private var snapshotTask: Task<Void, Never>?
 
+    // Skills
+    /// Skills the selected past session used.
+    private(set) var sessionSkills: SessionSkills?
+    /// A skill to highlight in that list, when the session was opened from the Skills window.
+    var highlightedSkill: String?
+    /// A skill the Skills window should select, set by clicking a skill in a session.
+    var skillsRequest: String?
+    private var skillsTask: Task<Void, Never>?
+
     let home = FileManager.default.homeDirectoryForCurrentUser
     private var openLatestSessionOnLoad = false
 
@@ -194,7 +203,16 @@ final class AppModel {
 
     func select(source s: Source) {
         source = s
+        highlightedSkill = nil
         reloadSnapshot()
+    }
+
+    /// Shows a recorded session in the main window, with one of its skills highlighted.
+    func open(session id: String, harness h: Harness, cwd: String, skill: String?) {
+        select(harness: h)
+        select(directory: cwd)
+        select(source: .session(id))
+        highlightedSkill = skill
     }
 
     var presetIsActive: Bool { presetApplies && preset.id != Preset.onDisk.id }
@@ -232,6 +250,7 @@ final class AppModel {
         let harness = harness
         let directory = selectedDirectory
         let session = selectedSession
+        reloadSessionSkills(session)
         guard directory != nil || session != nil else {
             baseSnapshot = nil
             snapshot = nil
@@ -257,6 +276,20 @@ final class AppModel {
             if let snap, !snap.items.contains(where: { $0.id == selectedItemID }) {
                 selectedItemID = visibleSections(of: snap).first?.items.first?.id
             }
+        }
+    }
+
+    private func reloadSessionSkills(_ session: SessionSummary?) {
+        skillsTask?.cancel()
+        guard let session else { sessionSkills = nil; highlightedSkill = nil; return }
+        if sessionSkills?.id != session.id { sessionSkills = nil }
+        skillsTask = Task {
+            let found = await Task.detached(priority: .userInitiated) { () -> SessionSkills? in
+                let scanner = SkillUsageScanner()
+                return scanner.session(files: scanner.scan(transcript: session.file, harness: session.harness.rawValue))
+            }.value
+            guard !Task.isCancelled else { return }
+            sessionSkills = found
         }
     }
 

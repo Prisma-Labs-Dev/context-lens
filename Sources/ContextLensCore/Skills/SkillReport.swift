@@ -48,6 +48,33 @@ public struct SkillStat: Codable, Sendable, Identifiable {
     public var examples: [SkillSession]
 }
 
+/// One skill as a single session used it.
+public struct SessionSkill: Codable, Hashable, Sendable, Identifiable {
+    public var id: String { name }
+    public var name: String
+    public var uses: Int
+    /// Skill tool calls that errored. Not counted in `uses`.
+    public var failures: Int
+    public var triggers: [String: Int]
+    public var firstUsed: Date?
+    /// Whether a skill of this name is installed today.
+    public var installed: Bool
+}
+
+/// A session and the skills it used, in order of first use.
+public struct SessionSkills: Codable, Hashable, Sendable, Identifiable {
+    /// The same id Past sessions uses.
+    public var id: String
+    public var harness: String
+    public var file: String
+    public var cwd: String
+    /// The first prompt for Copilot CLI; the Past sessions title from `SkillUsageScanner.session`.
+    public var title: String?
+    public var started: Date?
+    public var modified: Date
+    public var skills: [SessionSkill]
+}
+
 public struct SkillReport: Codable, Sendable {
     public var generated: Date
     public var since: Date?
@@ -127,8 +154,10 @@ public enum SkillReportBuilder {
         return out.sorted()
     }
 
-    public static func build(files: [SkillFileScan], installed: [InstalledSkill], since: Date?, folder: String?,
-                             now: Date = Date(), examples: Int = 8) -> SkillReport {
+    struct Use { var skill: String; var event: SkillEvent; var file: SkillFileScan }
+
+    /// Every counted use, under the installed skill's name, and the sessions in the window.
+    static func uses(files: [SkillFileScan], installed: [InstalledSkill], since: Date?, folder: String?) -> (uses: [Use], sessions: Set<String>) {
         // A slash command is a skill only when the name is known to be one; `/model`, `/clear` and
         // custom commands are not.
         var known = Set(installed.map(\.name))
@@ -155,7 +184,6 @@ public enum SkillReportBuilder {
             return e.skill
         }
 
-        struct Use { var skill: String; var event: SkillEvent; var file: SkillFileScan }
         var uses: [Use] = []
         var sessions = Set<String>()
         for f in files where inFolder(f.cwd, folder) {
@@ -182,7 +210,12 @@ public enum SkillReportBuilder {
         // Reads are once per session across a parent and its subagent files too.
         var seenReads = Set<String>()
         uses = uses.filter { $0.event.trigger != .read || seenReads.insert("\($0.file.session)|\($0.skill)").inserted }
+        return (uses, sessions)
+    }
 
+    public static func build(files: [SkillFileScan], installed: [InstalledSkill], since: Date?, folder: String?,
+                             now: Date = Date(), examples: Int = 8) -> SkillReport {
+        let (uses, sessions) = self.uses(files: files, installed: installed, since: since, folder: folder)
         let installedByName = Dictionary(grouping: installed, by: \.name)
         var stats: [SkillStat] = []
         for (name, group) in Dictionary(grouping: uses, by: \.skill) {
@@ -223,9 +256,66 @@ public enum SkillReportBuilder {
             .sorted { ($0.name, $0.harness, $0.path) < ($1.name, $1.harness, $1.path) }
         return SkillReport(generated: now, since: since, folder: folder, sessions: sessions.count, skills: stats, unused: unused)
     }
+
+    /// Sessions active in the window, newest first, each with every skill it used. A session that
+    /// started before the window keeps its earlier uses.
+    public static func sessions(files: [SkillFileScan], installed: [InstalledSkill], since: Date?, folder: String?) -> [SessionSkills] {
+        let active = Set(files.filter { f in inFolder(f.cwd, folder) && (since.map { f.modified >= $0 } ?? true) }.map(\.session))
+        let mine = files.filter { active.contains($0.session) }
+        let names = Set(installed.map(\.name))
+        let usesBySession = Dictionary(grouping: uses(files: mine, installed: installed, since: nil, folder: nil).uses, by: \.file.session)
+        var out: [SessionSkills] = []
+        for (id, group) in Dictionary(grouping: mine, by: \.session) {
+            var skills: [SessionSkill] = []
+            for (name, u) in Dictionary(grouping: usesBySession[id] ?? [], by: \.skill) {
+                let ok = u.filter { !$0.event.failed }
+                var triggers: [String: Int] = [:]
+                for x in ok { triggers[x.event.trigger.rawValue, default: 0] += 1 }
+                skills.append(SessionSkill(
+                    name: name, uses: ok.count, failures: u.count - ok.count, triggers: triggers,
+                    firstUsed: u.compactMap(\.event.time).min(), installed: names.contains(name)
+                ))
+            }
+            skills.sort { ($0.firstUsed ?? .distantFuture, $0.name) < ($1.firstUsed ?? .distantFuture, $1.name) }
+            out.append(SessionSkills(
+                id: id, harness: group[0].harness, file: group[0].file, cwd: group.first { !$0.cwd.isEmpty }?.cwd ?? "",
+                title: group.compactMap(\.title).first, started: group.compactMap(\.started).min(),
+                modified: group.map(\.modified).max() ?? group[0].modified, skills: skills
+            ))
+        }
+        return out.sorted { ($0.modified, $0.id) > ($1.modified, $1.id) }
+    }
 }
 
 extension SkillUsageScanner {
+    /// One session's skills. `query` is a transcript path, a session id such as `claude:<id>`, or
+    /// a bare id or unique prefix of one.
+    public func session(_ query: String) -> SessionSkills? {
+        let files = scan().files
+        var ids = Set<String>()
+        if query.contains("/") {
+            let path = FileUtil.realPath(URL(filePath: NSString(string: query).expandingTildeInPath)).path
+            ids = Set(files.filter { $0.file == path || $0.file.hasPrefix(path + "/") }.map(\.session))
+        }
+        if ids.isEmpty { ids = Set(files.filter { $0.session == query }.map(\.session)) }
+        if ids.isEmpty { ids = Set(files.filter { ($0.session.split(separator: ":").last ?? "").hasPrefix(query) }.map(\.session)) }
+        guard ids.count == 1 else { return nil }
+        guard var out = session(files: files.filter { ids.contains($0.session) }) else { return nil }
+        if out.title == nil {
+            let index = SessionIndex(env: env)
+            let file = URL(filePath: out.file)
+            out.title = out.harness == "claude" ? index.claudeSummary(file)?.title
+                : out.harness == "codex" ? index.codexSummary(file, names: index.codexThreadNames())?.title : nil
+        }
+        return out
+    }
+
+    /// The skills of the session in these files, with installed skills looked up for its folder.
+    public func session(files: [SkillFileScan]) -> SessionSkills? {
+        let installed = SkillInventory(env: env).installed(folders: Array(Set(files.map(\.cwd).filter { !$0.isEmpty })))
+        return SkillReportBuilder.sessions(files: files, installed: installed, since: nil, folder: nil).first
+    }
+
     /// Scans transcripts (from the cache where unchanged) and builds the report.
     public func report(since: Date?, folder: String?) -> SkillReport {
         let files = scan(since: since).files
