@@ -82,6 +82,21 @@ final class AppModel {
     private(set) var measuring = false
     private(set) var measureError: String?
 
+    // MCP switches (McpSwitchesView.swift)
+    /// The settings sheet that switches MCP servers and plugins in the harnesses' own files.
+    var showingMcpSwitches = false
+    var mcpSwitches: McpToggleList?
+    var mcpScope: ToggleScope = ToggleScope(rawValue: UserDefaults.standard.string(forKey: "mcpScope") ?? "") ?? .folder {
+        didSet { UserDefaults.standard.set(mcpScope.rawValue, forKey: "mcpScope") }
+    }
+    /// A switch waiting for confirmation, with the diff it would write.
+    var pendingSwitch: (plan: TogglePlan, previews: [ConfigWriter.Preview])?
+    var lastSwitch: ConfigWriter.Applied?
+    var switchError: String?
+    /// The measurement taken before the last switch, to compare "Measure again" with.
+    var measuredBeforeSwitch: MeasuredContext?
+    let configWriter = ConfigWriter()
+
     let home = FileManager.default.homeDirectoryForCurrentUser
     private var openLatestSessionOnLoad = false
     /// A session to open once the history has loaded, from `-session <id>` (with or without the harness prefix).
@@ -302,6 +317,7 @@ final class AppModel {
         let session = selectedSession
         reloadSessionSkills(session)
         loadMeasured()
+        if showingMcpSwitches { loadMcpSwitches() }
         guard directory != nil || session != nil, !needsAccess(session?.cwd ?? directory ?? "") else {
             loadingSnapshot = false
             baseSnapshot = nil

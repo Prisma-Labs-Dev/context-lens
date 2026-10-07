@@ -21,6 +21,9 @@ struct ContextLensApp: App {
                     .keyboardShortcut("o")
                 Button("Reload") { model.reloadAll() }
                     .keyboardShortcut("r")
+                Button("MCP Settings…") { model.openMcpSwitches() }
+                    .keyboardShortcut("m", modifiers: [.command, .shift])
+                    .disabled(model.selectedDirectory == nil)
                 HealthCommand()
                 SkillsCommand()
             }
@@ -188,6 +191,9 @@ struct ContentView: View {
         .sheet(item: Binding(get: { model.namingPreset }, set: { model.namingPreset = $0 })) { naming in
             PresetNameSheet(naming: naming).environment(model)
         }
+        .sheet(isPresented: Binding(get: { model.showingMcpSwitches }, set: { model.showingMcpSwitches = $0; if !$0 { model.pendingSwitch = nil } })) {
+            McpSwitchesSheet().environment(model)
+        }
         .onAppear {
             // `-appearance light|dark` forces an appearance, for checking both themes.
             let args = ProcessInfo.processInfo.arguments
@@ -198,6 +204,8 @@ struct ContentView: View {
             if args.contains("-health") { openWindow(id: "health") }
             // `-skills` opens the Skills window too.
             if args.contains("-skills") { openWindow(id: "skills") }
+            // `-mcp-settings` opens the MCP switches for the folder.
+            if args.contains("-mcp-settings") { model.openMcpSwitches() }
         }
     }
 }

@@ -549,6 +549,12 @@ struct TreeHeader: View {
                 Spacer()
                 if model.canEditPreset, let group = Preset.Group(kind: kind) {
                     GroupSwitch(group: group)
+                } else if kind == .mcp, model.source == .now, !model.presetIsActive {
+                    Button { model.openMcpSwitches() } label: {
+                        Text("Switch…").font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.ink2)
+                    }
+                    .buttonStyle(.plain)
+                    .help("MCP settings: switch servers and plugins on or off in \(model.harness.displayName)'s own settings")
                 }
                 if let mcp = mcpTotal {
                     Text(Format.tokens(mcp)).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(Theme.ink3)

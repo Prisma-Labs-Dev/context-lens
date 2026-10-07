@@ -24,6 +24,12 @@ that harness puts into its context there.
   A By session mode lists the skills each session used; a past session in the main window shows
   them above its context. Use is read from the transcripts (a skill tool call, a slash command, or
   a read of the skill's SKILL.md); no model is involved.
+- **MCP settings** (the switch icon in the top bar, ⇧⌘M): switch each MCP server, and each plugin
+  that brings MCP tools, on or off for this folder or everywhere, with its measured token cost and
+  where its state comes from ("off everywhere, on here"). Unlike presets this edits the
+  harness's own settings, using the keys Claude Code's `/mcp` and `claude plugin` write (see
+  docs/harness-rules.md). The first switch shows the exact diff; every write is backed up and the
+  last one can be undone. "Measure again" shows the saving. `context-lens mcp` does the same.
 
 ## Requirements
 
@@ -90,9 +96,11 @@ row that opens that setting, instead of a privacy prompt per folder.
 
 It writes only to `~/.context-lens/` (generated preset settings, caches such as
 `~/.context-lens/skills/`, `/context` measurement history under `~/.context-lens/context/`,
-health reports), the
-optional `~/.local/bin/context-lens` link, and the app's own preferences. It never edits a file
-the harnesses read.
+health reports, config backups under `~/.context-lens/backups/`), the optional
+`~/.local/bin/context-lens` link, and the app's own preferences. It edits a file the harnesses
+read only when you flip a switch in MCP settings (or run `context-lens mcp enable|disable`), and
+then only the key that switch names: `enabledPlugins`, `disabledMcpServers`, `deniedMcpServers`,
+`enabledMcpjsonServers` / `disabledMcpjsonServers`, or a Codex server's `enabled`.
 
 **Nothing leaves your Mac.** The app and the engine make no network requests. The two exceptions
 are opt-in CLI commands, described next.
@@ -136,6 +144,10 @@ context-lens health --since 7d --no-classify   # friction across all sessions, l
 context-lens health judge             # sends the report to Claude; writes proposals to ~/.context-lens/health/proposals
 context-lens skills --since 30d --cwd ~/code/my-app   # skills used and never used; --since all for everything
 context-lens skills --session <transcript path or session id>   # skills one session used
+context-lens mcp list ~/code/my-app   # MCP servers and plugins: on/off per scope, measured cost
+context-lens mcp disable figma --scope user     # off everywhere (also: --scope folder, the default)
+context-lens mcp enable figma ~/code/my-app     # on in that project only; --dry-run shows the diff
+context-lens mcp undo                 # revert the last switch
 ```
 
 ## Develop
@@ -161,6 +173,8 @@ The Xcode project is generated from `project.yml`; run `xcodegen generate` (the 
 - `Sources/ContextLensCore/Health`, `health/` (Node, Jev) and `docs/health.md`: agent health.
 - `Sources/ContextLensCore/Skills` and `App/SkillsView.swift`: skill use.
 - `Sources/ContextLensCore/PrivacyGuard.swift`: the folders the app never walks into.
+- `Sources/ContextLensCore/Toggles` and `App/McpSwitchesView.swift`: MCP settings, the only code
+  that writes harness config.
 
 ## License
 

@@ -34,6 +34,14 @@ Usage:
                                                           counts, MCP tool schemas per server included. Kept as history in
                                                           ~/.context-lens/context/, with /context runs found in transcripts
                                                           (--cached: the latest, without running; --history: all of them)
+  context-lens mcp list [<dir>] [--harness claude|codex]
+                                                          MCP servers and plugins with MCP tools, their on/off state per scope
+                                                          (everywhere, project settings, here) and measured token cost
+  context-lens mcp enable|disable <name> [--scope folder|user] [--dry-run] [<dir>]
+                                                          Switch a server or plugin in the harness's own settings: folder
+                                                          (default) writes the project's local settings, user writes your
+                                                          user settings. Backs up to ~/.context-lens/backups/
+  context-lens mcp undo                                   Revert the last switch
   context-lens --help
 
 Options:
@@ -200,6 +208,8 @@ case "skills":
     runSkills(opts)
 case "growth":
     runGrowth(opts)
+case "mcp":
+    runMcp(opts)
 case "measure":
     let store = MeasuredContextStore()
     if opts.flags["history"] != nil {

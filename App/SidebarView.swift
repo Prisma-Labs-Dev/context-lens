@@ -162,6 +162,7 @@ struct TopBar: View {
                 PresetPicker()
                 SourcePicker()
                 LaunchButton()
+                McpSwitchesButton()
                 IconButton(systemImage: "folder", help: "Reveal in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: dir)])
                 }
