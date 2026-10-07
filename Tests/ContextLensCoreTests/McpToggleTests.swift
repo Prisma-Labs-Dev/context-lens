@@ -134,6 +134,7 @@ import Testing
         #expect(figma.on)
         #expect(figma.state == "off everywhere, on here")
         #expect(figma.servers == ["plugin_figma_figma"])
+        #expect(figma.isOn(at: .folder) && !figma.isOn(at: .user))
         #expect(!list.toggles.contains { $0.pluginKey == "skills-only@market" })
         let computer = list.toggles.first { $0.id == "claude|user|computer" }!
         #expect(computer.on && computer.state == "on everywhere")

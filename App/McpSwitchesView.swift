@@ -188,7 +188,7 @@ struct SwitchRow: View {
             if toggle.kind == .fixed {
                 Image(systemName: "lock").font(.system(size: 10)).foregroundStyle(Theme.ink3).frame(width: 32)
             } else {
-                Toggle("", isOn: Binding(get: { toggle.on }, set: { model.requestSwitch(toggle, on: $0) }))
+                Toggle("", isOn: Binding(get: { toggle.isOn(at: model.mcpScope) }, set: { model.requestSwitch(toggle, on: $0) }))
                     .toggleStyle(.switch).controlSize(.mini).labelsHidden()
                     .disabled(!allowed)
                     .frame(width: 32)

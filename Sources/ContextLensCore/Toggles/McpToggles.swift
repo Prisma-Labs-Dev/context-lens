@@ -43,6 +43,12 @@ public struct McpToggle: Identifiable, Hashable, Codable, Sendable {
     public var tokensFrom: String?
     /// The plugin key (`figma@claude-plugins-official`) for plugins.
     public var pluginKey: String?
+
+    /// What a switch for `scope` shows: the effective state for this folder, or the user-level
+    /// value everywhere (a plugin is off unless enabled; a server is on unless switched off).
+    public func isOn(at scope: ToggleScope) -> Bool {
+        scope == .folder ? on : (userValue ?? (kind != .plugin))
+    }
 }
 
 public struct McpToggleList: Codable, Sendable {
