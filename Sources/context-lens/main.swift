@@ -23,6 +23,9 @@ Usage:
                                                           to ~/.context-lens/health/proposals/
   context-lens health proposals                           Proposals, newest first
   context-lens health status <id> <open|applied|briefed|rejected> [--note text]
+  context-lens skills [--since 30d|all] [--cwd <dir>]   Skills sessions used (Skill tool, slash command, subagent, SKILL.md read)
+                                                          across Claude Code, Codex and Copilot CLI, and installed skills none
+                                                          used. Cached in ~/.context-lens/skills/
   context-lens --help
 
 Options:
@@ -185,6 +188,8 @@ case "session":
     emit(SnapshotOut(snap))
 case "health":
     runHealth(opts)
+case "skills":
+    runSkills(opts)
 default:
     fail("unknown command \(command)")
 }

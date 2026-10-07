@@ -22,11 +22,20 @@ struct ContextLensApp: App {
                 Button("Reload") { model.reloadAll() }
                     .keyboardShortcut("r")
                 HealthCommand()
+                SkillsCommand()
             }
         }
 
         Window("Agent Health", id: "health") {
             HealthView()
+                .frame(minWidth: 900, minHeight: 560)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1240, height: 820)
+
+        Window("Skills", id: "skills") {
+            SkillsView()
+                .environment(model)
                 .frame(minWidth: 900, minHeight: 560)
         }
         .windowStyle(.hiddenTitleBar)
@@ -55,6 +64,10 @@ struct MenuBarMenu: View {
         Button("Open Context Lens") { show() }
         Button("Agent Health") {
             openWindow(id: "health")
+            NSApp.activate()
+        }
+        Button("Skills") {
+            openWindow(id: "skills")
             NSApp.activate()
         }
         Divider()
@@ -103,6 +116,16 @@ struct HealthCommand: View {
     var body: some View {
         Button("Agent Health") { openWindow(id: "health") }
             .keyboardShortcut("h", modifiers: [.command, .shift])
+    }
+}
+
+/// Window menu command for the Skills window (⌘⇧K).
+struct SkillsCommand: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Skills") { openWindow(id: "skills") }
+            .keyboardShortcut("k", modifiers: [.command, .shift])
     }
 }
 
@@ -173,6 +196,8 @@ struct ContentView: View {
             }
             // `-health` opens the Agent Health window too.
             if args.contains("-health") { openWindow(id: "health") }
+            // `-skills` opens the Skills window too.
+            if args.contains("-skills") { openWindow(id: "skills") }
         }
     }
 }
