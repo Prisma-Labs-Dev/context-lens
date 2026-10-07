@@ -44,6 +44,8 @@ struct ContextTreeView: View {
                 .opacity(model.loadingSnapshot ? 0.4 : 1)
                 .overlay { if model.loadingSnapshot { ProgressView().controlSize(.small) } }
             }
+        } else if let dir = model.selectedDirectory, model.needsAccess(dir) {
+            AccessPlaceholder()
         } else {
             Placeholder(text: model.loadingSnapshot ? "Loading…" : "Pick a folder on the left.")
         }
@@ -59,6 +61,22 @@ struct Placeholder: View {
 
     var body: some View {
         Text(text).font(Theme.body).foregroundStyle(Theme.ink3).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// A folder in Documents, Desktop, iCloud Drive or another guarded place, before the app has
+/// Full Disk Access.
+struct AccessPlaceholder: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "lock").font(.system(size: 20)).foregroundStyle(Theme.ink3)
+            Text("macOS guards this folder. Give Context Lens Full Disk Access to read it, and every other guarded session folder, without a prompt for each.")
+                .font(Theme.body).foregroundStyle(Theme.ink2).multilineTextAlignment(.center).frame(maxWidth: 380)
+            QuietButton(title: "Open Full Disk Access settings", systemImage: "gearshape", tint: Theme.ink) { model.openFullDiskAccessSettings() }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

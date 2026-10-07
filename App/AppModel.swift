@@ -72,6 +72,11 @@ final class AppModel {
     let home = FileManager.default.homeDirectoryForCurrentUser
     private var openLatestSessionOnLoad = false
 
+    /// Whether the app may read folders macOS guards (Documents, Desktop, iCloud Drive, other
+    /// volumes). Without it, session folders there are listed but not read, so the user sees
+    /// one Full Disk Access row instead of a privacy prompt per folder.
+    private(set) var fullDiskAccess = PrivacyGuard.hasFullDiskAccess()
+
     init() {
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "-harness"), i + 1 < args.count, let h = Harness(rawValue: args[i + 1]) {
@@ -88,6 +93,9 @@ final class AppModel {
         if !presets.contains(where: { $0.id == presetID }) { presetID = Preset.onDisk.id }
         rebuildFolderLists()
         reloadSnapshot()
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.recheckAccess() }
+        }
         // Load history at launch, not when the window appears: the menu bar lists recent folders
         // even when no window is open.
         Task { await loadSessions() }
@@ -129,8 +137,30 @@ final class AppModel {
             byPath[s.cwd] = e
         }
         let fm = FileManager.default
-        sessionFolders = byPath.filter { fm.fileExists(atPath: $0.key) }
+        // Checking that a guarded folder exists would itself ask for access.
+        sessionFolders = byPath.filter { needsAccess($0.key) || fm.fileExists(atPath: $0.key) }
         rebuildFolderLists()
+    }
+
+    /// The folder is in a location macOS guards and the app has no Full Disk Access.
+    func needsAccess(_ path: String) -> Bool {
+        !fullDiskAccess && PrivacyGuard.isProtected(path, home: home.path)
+    }
+
+    /// Session folders the app leaves unread until it has Full Disk Access.
+    var foldersNeedingAccess: Int { sessionFolders.keys.filter(needsAccess).count }
+
+    /// Picks up Full Disk Access granted in System Settings while the app ran.
+    func recheckAccess() {
+        let now = PrivacyGuard.hasFullDiskAccess()
+        guard now != fullDiskAccess else { return }
+        fullDiskAccess = now
+        indexFolders()
+        reloadSnapshot()
+    }
+
+    func openFullDiskAccessSettings() {
+        NSWorkspace.shared.open(PrivacyGuard.settingsURL)
     }
 
     private func rebuildFolderLists() {
@@ -251,7 +281,8 @@ final class AppModel {
         let directory = selectedDirectory
         let session = selectedSession
         reloadSessionSkills(session)
-        guard directory != nil || session != nil else {
+        guard directory != nil || session != nil, !needsAccess(session?.cwd ?? directory ?? "") else {
+            loadingSnapshot = false
             baseSnapshot = nil
             snapshot = nil
             return

@@ -128,6 +128,33 @@ struct Fixture {
         #expect(skills.filter { $0.load == .listing }.map(\.content) == ["- demo: Does demo things"])
     }
 
+    @Test func nestedWalkStaysOutOfPrivacyGuardedFolders() throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        try f.write("CLAUDE.md", "app", base: f.project)
+        for guarded in ["Pictures/Photos Library.photoslibrary/originals", "Library/Mail/V10", "Documents/notes",
+                        "Desktop/draft", "Downloads/zip", "Music/Music Library.musiclibrary/x", "Movies/clip",
+                        "code/old.photoslibrary/x"] {
+            try f.write("\(guarded)/CLAUDE.md", "guarded", base: f.home)
+        }
+        // A session run in ~ walks the whole home.
+        let found = ClaudeResolver(env: f.env).nestedInstructionFiles(below: f.home, maxDepth: 6, limit: 100)
+        #expect(found.map { $0.path.replacingOccurrences(of: f.home.path + "/", with: "") } == ["code/app/CLAUDE.md"])
+    }
+
+    @Test func knowsWhichFoldersNeedAccess() {
+        let home = "/Users/me"
+        #expect(PrivacyGuard.isProtected("/Users/me/Documents/notes", home: home))
+        #expect(PrivacyGuard.isProtected("/Users/me/Library/Mobile Documents/com~apple~CloudDocs/app", home: home))
+        #expect(PrivacyGuard.isProtected("/Volumes/usb/app", home: home))
+        #expect(!PrivacyGuard.isProtected("/Users/me/code/app", home: home))
+        #expect(!PrivacyGuard.isProtected("/Users/me/Library/Application Support/app", home: home))
+        #expect(!PrivacyGuard.isProtected("/Users/me", home: home))
+        #expect(PrivacyGuard.skip(URL(filePath: "/Users/me/Library"), home: home))
+        #expect(PrivacyGuard.skip(URL(filePath: "/Users/me/code/Photos.photoslibrary"), home: home))
+        #expect(!PrivacyGuard.skip(URL(filePath: "/Users/me/code/Music"), home: home))
+    }
+
     @Test func slugMatchesClaudeCode() {
         #expect(ClaudePaths.slug("/Users/me/repos/.claude/worktrees/x-1") == "-Users-me-repos--claude-worktrees-x-1")
     }

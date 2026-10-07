@@ -113,7 +113,7 @@ public struct SkillInventory: Sendable {
         let codex = CodexResolver(env: env)
         add(claude.skills(cwd: env.home, git: nil), harness: "claude", projectOnly: false)
         add(codex.skills(cwd: env.home), harness: "codex", projectOnly: false)
-        for folder in Set(folders) where !folder.isEmpty && folder != env.home.path {
+        for folder in Set(folders) where !folder.isEmpty && folder != env.home.path && !PrivacyGuard.blocked(folder, home: env.home.path) {
             let dir = URL(filePath: folder)
             guard FileUtil.isDirectory(dir) else { continue }
             add(claude.skills(cwd: dir, git: Git.roots(for: dir)), harness: "claude", projectOnly: true)

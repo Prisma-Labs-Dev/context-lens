@@ -104,6 +104,27 @@ What avoids it: start sessions in place unless they change repo files; inside a 
 multi-line scripts to a file and run `python3 /path/script.py`, keep one plain command per call,
 and use absolute paths inside the worktree.
 
+## Skill use
+
+Being listed in the context is not a use. The Skills screen and `context-lens skills` count only
+what a transcript shows a session doing:
+
+- Claude Code: a `Skill` tool call (`model`, or `subagent` inside a subagent transcript), a
+  `<command-name>` message for a name in `invoked_skills` (`user`, so built-ins such as `/model`
+  do not count), or a `Read` or shell read (as for Codex, below) of a `SKILL.md` under a `skills/`
+  folder.
+- Codex has no skill tool. Its instructions list every skill's path, so a use is a shell call
+  whose command prints a `SKILL.md` with a reader such as `cat`, `sed -n` or `head`. Editors,
+  `ls`, `rg -g`, `sed -i`, `apply_patch`, globs and bare relative or remote paths do not count.
+- Copilot CLI: `skill.invoked` in `~/.copilot/session-state/<id>/events.jsonl`, with
+  `trigger` `user-invoked` or agent-invoked.
+
+A plugin skill is named `plugin:skill`; any other skill takes its folder name. Results are cached
+per transcript under `~/.context-lens/skills/`, keyed by size and modification time.
+
+Known limits: a SKILL.md read in order to edit it counts as a use; skills bundled with Claude Code
+show as not installed; repo-relative SKILL.md paths are not counted.
+
 ## Re-checking
 
 ```bash

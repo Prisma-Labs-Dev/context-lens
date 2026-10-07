@@ -19,6 +19,11 @@ that harness puts into its context there.
   same from a shell. See docs/presets.md.
 - **Stale references**: absolute and `~/` paths in context files that no longer exist are flagged.
   A note about a deleted repo or tool is a strong sign the note itself is outdated.
+- **Skills**: which skills Claude Code, Codex and Copilot sessions actually used, filtered by time
+  window and folder, with per-skill counts and the installed skills nothing used (a prune list).
+  A By session mode lists the skills each session used; a past session in the main window shows
+  them above its context. Use is read from the transcripts (a skill tool call, a slash command, or
+  a read of the skill's SKILL.md); no model is involved.
 
 ## Requirements
 
@@ -49,8 +54,11 @@ cd context-lens
 scripts/install.sh      # Release build into ~/Applications/Context Lens.app, then launch
 ```
 
-A source build is signed ad hoc. It opens normally on the Mac that built it; copied to another
-Mac, Gatekeeper blocks it. "Install Command Line Tool" (in the presets panel) links
+A source build is signed with your first "Apple Development" identity if the keychain has one
+(override with `CONTEXT_LENS_SIGN_IDENTITY`), otherwise ad hoc. A stable identity keeps macOS
+privacy grants such as Full Disk Access across rebuilds; with an ad hoc signature every build
+counts as a new app. Either way it opens on the Mac that built it, and Gatekeeper blocks it on
+another Mac. "Install Command Line Tool" (in the presets panel) links
 `~/.local/bin/context-lens` to the CLI inside it.
 
 The app is **unsandboxed** either way. The menu bar icon (bars under a lens) lists recent folders
@@ -71,10 +79,17 @@ It is unsandboxed because it has to read files outside its own container:
   `node_modules`, build output and similar), for `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.agents/`
   and `.mcp.json`, plus any file those import with `@path`. The stale check only tests whether
   the paths they mention exist.
+- For skills: Copilot CLI sessions and skills under `~/.copilot`, and skills under `~/.agents`.
 - For agent health only: Claude desktop session metadata under
   `~/Library/Application Support/Claude`, and OpenClaw's Codex homes under `~/.openclaw` if present.
 
-It writes only to `~/.context-lens/` (generated preset settings, caches, health reports), the
+Folders macOS guards (Desktop, Documents, Downloads, iCloud Drive, other `~/Library` data,
+photo and music libraries, other volumes) are never walked into. A session folder in one of them
+is listed but left unread until you give Context Lens Full Disk Access; the sidebar then shows one
+row that opens that setting, instead of a privacy prompt per folder.
+
+It writes only to `~/.context-lens/` (generated preset settings, caches such as
+`~/.context-lens/skills/`, health reports), the
 optional `~/.local/bin/context-lens` link, and the app's own preferences. It never edits a file
 the harnesses read.
 
@@ -118,17 +133,21 @@ context-lens run lean claude          # in any folder, after "Install Command Li
 context-lens plan careful codex .     # the flags and environment a launch would use
 context-lens health --since 7d --no-classify   # friction across all sessions, local only
 context-lens health judge             # sends the report to Claude; writes proposals to ~/.context-lens/health/proposals
+context-lens skills --since 30d --cwd ~/code/my-app   # skills used and never used; --since all for everything
+context-lens skills --session <transcript path or session id>   # skills one session used
 ```
 
 ## Develop
 
 ```bash
-scripts/run.sh                                   # debug build and launch
+scripts/run.sh                                   # debug build, install to ~/Applications, launch
 scripts/run.sh -directory ~/code/my-app -harness codex -latest-session -appearance light
 scripts/check.sh                                 # tests + app build
 ```
 
 The Xcode project is generated from `project.yml`; run `xcodegen generate` (the scripts do it).
+`scripts/run.sh` and `scripts/install.sh` both sign with `scripts/sign.sh` and replace
+`~/Applications/Context Lens.app`, so there is one app at one path and privacy grants stick.
 
 ## Layout
 
@@ -139,6 +158,8 @@ The Xcode project is generated from `project.yml`; run `xcodegen generate` (the 
 - `docs/harness-rules.md`: the loading rules each harness follows, and how they were verified.
 - `docs/presets.md`: the switches presets use for each harness.
 - `Sources/ContextLensCore/Health`, `health/` (Node, Jev) and `docs/health.md`: agent health.
+- `Sources/ContextLensCore/Skills` and `App/SkillsView.swift`: skill use.
+- `Sources/ContextLensCore/PrivacyGuard.swift`: the folders the app never walks into.
 
 ## License
 
