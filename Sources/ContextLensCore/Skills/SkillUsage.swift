@@ -7,9 +7,12 @@ import Foundation
 /// - `subagent`: a Claude Code subagent called the `Skill` tool.
 /// - `read`: the agent read a `SKILL.md` itself (Claude Code `Read` or a shell reader such as
 ///   `cat` or `sed -n`; Codex has no skill tool, so this is how Codex uses skills).
+/// - `subagentRead`: a Claude Code subagent read a `SKILL.md`.
+/// - `cli`: the agent ran a skill's own command line tool through a package runner
+///   (`npx -y deckify-cli` for a skill named `deckify`) without loading the skill.
 public struct SkillEvent: Codable, Sendable, Hashable {
     public enum Trigger: String, Codable, Sendable, CaseIterable {
-        case model, user, subagent, read
+        case model, user, subagent, read, subagentRead, cli
 
         public var label: String {
             switch self {
@@ -17,8 +20,14 @@ public struct SkillEvent: Codable, Sendable, Hashable {
             case .user: "slash command"
             case .subagent: "subagent"
             case .read: "read SKILL.md"
+            case .subagentRead: "subagent read SKILL.md"
+            case .cli: "ran its CLI"
             }
         }
+
+        /// Signs of use rather than loads: they count once per session, and not at all in a
+        /// session that loaded the skill.
+        public var once: Bool { self == .read || self == .subagentRead || self == .cli }
     }
 
     public var skill: String
@@ -75,7 +84,7 @@ public struct SkillUsageScanner: Sendable {
     public var copilotHome: URL
     public var cacheFile: URL
 
-    static let cacheVersion = 2
+    static let cacheVersion = 3
 
     public init(env: HarnessEnvironment = .current, cacheFile: URL? = nil) {
         self.env = env
@@ -218,23 +227,101 @@ enum SkillPaths {
     }
 
     /// SKILL.md paths that a shell command prints. Only absolute, `~/`, `$HOME/` and `./` paths
-    /// count, so `gh api …/SKILL.md` and globs do not.
+    /// count, so `gh api …/SKILL.md` and globs do not. Variables set earlier in the command
+    /// (`K=/repo/.claude/skills`) and `for s in a b; do cat $K/$s/SKILL.md; done` loops resolve
+    /// to each path they name.
     static func reads(inCommand command: String) -> [String] {
         var out: [String] = []
-        for segment in command.components(separatedBy: CharacterSet(charactersIn: ";|&\n")) {
-            guard segment.contains("SKILL.md") else { continue }
+        var vars: [String: [String]] = [:]
+        for segment in segments(command) {
             var tokens = shellWords(segment)
-            while let t = tokens.first, t.contains("=") && !t.hasPrefix("-") || ["sudo", "command", "noglob", "builtin"].contains(t) {
+            if tokens.count >= 3, tokens[0] == "for", tokens[2] == "in" {
+                vars[tokens[1]] = Array(tokens.dropFirst(3))
+                continue
+            }
+            if !tokens.isEmpty, tokens.allSatisfy(isAssignment) {
+                for t in tokens {
+                    let i = t.firstIndex(of: "=")!
+                    let values = substitute(String(t[t.index(after: i)...]), vars)
+                    vars[String(t[..<i])] = values.isEmpty || t.contains("$(") || t.contains("`") ? nil : values
+                }
+                continue
+            }
+            guard segment.contains("SKILL.md") else { continue }
+            while let t = tokens.first, isAssignment(t) || ["sudo", "command", "noglob", "builtin", "do", "then", "else", "time"].contains(t) {
                 tokens.removeFirst()
             }
             guard let head = tokens.first.map({ URL(filePath: $0).lastPathComponent }), readers.contains(head) else { continue }
             if head == "sed", tokens.contains(where: { $0.hasPrefix("-i") }) { continue }
             for t in tokens.dropFirst() where t.hasSuffix("/SKILL.md") && !t.contains("*") {
-                if t.hasPrefix("/") || t.hasPrefix("~/") || t.hasPrefix("$HOME/") || t.hasPrefix("${HOME}/") || t.hasPrefix("./") || t.hasPrefix("../") || t.hasPrefix(".") {
-                    out.append(t)
+                for p in substitute(t, vars) where p.hasPrefix("/") || p.hasPrefix("~/") || p.hasPrefix("$HOME/") || p.hasPrefix("${HOME}/") || p.hasPrefix(".") {
+                    out.append(p)
                 }
             }
         }
+        return out
+    }
+
+    /// Package runners that start a tool by name.
+    static let runners = ["npx ", "bunx ", "pnpm dlx ", "yarn dlx ", "uvx ", "pipx run "]
+
+    /// Tools a shell command starts through a package runner: `deckify-cli` for `npx -y deckify-cli@1 plan`.
+    static func runs(inCommand command: String) -> [String] {
+        var out: [String] = []
+        for segment in segments(command) {
+            var tokens = shellWords(segment)
+            while let t = tokens.first, isAssignment(t) || ["sudo", "command", "do", "then", "else", "time"].contains(t) {
+                tokens.removeFirst()
+            }
+            guard let head = tokens.first else { continue }
+            let skip = ["pnpm", "yarn", "pipx"].contains(head) ? 2 : 1
+            guard runners.contains(tokens.prefix(skip).joined(separator: " ") + " ") else { continue }
+            guard var tool = tokens.dropFirst(skip).first(where: { !$0.hasPrefix("-") }), !tool.contains("$") else { continue }
+            // `@scope/tool@1.2` is `tool`.
+            if let slash = tool.lastIndex(of: "/") { tool = String(tool[tool.index(after: slash)...]) }
+            if let at = tool.dropFirst().firstIndex(of: "@") { tool = String(tool[..<at]) }
+            if !tool.isEmpty { out.append(tool) }
+        }
+        return out
+    }
+
+    static func isAssignment(_ word: String) -> Bool {
+        guard let i = word.firstIndex(of: "="), i > word.startIndex else { return false }
+        return word[..<i].allSatisfy { $0 == "_" || $0.isASCII && ($0.isLetter || $0.isNumber) } && !word.first!.isNumber
+    }
+
+    static let variable = try! NSRegularExpression(pattern: #"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"#)
+
+    /// Every expansion of the variables in `word`. Empty when a variable other than `HOME` is
+    /// unknown, so `$TMP/x/SKILL.md` names nothing.
+    static func substitute(_ word: String, _ vars: [String: [String]]) -> [String] {
+        guard let m = variable.matches(in: word, range: NSRange(word.startIndex..., in: word))
+            .first(where: { Range($0.range(at: 1), in: word).map { word[$0] != "HOME" } ?? false }),
+            let whole = Range(m.range, in: word), let name = Range(m.range(at: 1), in: word) else { return [word] }
+        guard let values = vars[String(word[name])] else { return [] }
+        return values.flatMap { substitute(word.replacingCharacters(in: whole, with: $0), vars) }
+    }
+
+    /// Splits a command on `;`, `|`, `&` and newlines outside quotes.
+    static func segments(_ command: String) -> [String] {
+        var out: [String] = []
+        var current = ""
+        var quote: Character?
+        for c in command {
+            if let q = quote {
+                if c == q { quote = nil }
+                current.append(c)
+            } else if c == "'" || c == "\"" {
+                quote = c
+                current.append(c)
+            } else if c == ";" || c == "|" || c == "&" || c == "\n" {
+                out.append(current)
+                current = ""
+            } else {
+                current.append(c)
+            }
+        }
+        out.append(current)
         return out
     }
 
@@ -305,7 +392,9 @@ struct ClaudeSkillParser {
             if out.cwd.isEmpty, LineScanner.has(line, "\"cwd\":\""), let obj = LineScanner.json(line), let cwd = obj["cwd"] as? String {
                 out.cwd = cwd
             }
-            let toolUse = LineScanner.has(line, "\"tool_use\"") && (LineScanner.has(line, "\"name\":\"Skill\"") || LineScanner.has(line, "SKILL.md"))
+            let toolUse = LineScanner.has(line, "\"tool_use\"") && (LineScanner.has(line, "\"name\":\"Skill\"") || LineScanner.has(line, "SKILL.md")
+                || LineScanner.has(line, "\"name\":\"Bash\"") && (LineScanner.has(line, "npx ") || LineScanner.has(line, "bunx ")
+                    || LineScanner.has(line, " dlx ") || LineScanner.has(line, "uvx ") || LineScanner.has(line, "pipx run ")))
             let toolError = !pending.isEmpty && LineScanner.has(line, "\"is_error\":true")
             let command = LineScanner.has(line, "<command-name>")
             if toolUse || toolError || command, let obj = LineScanner.json(line) {
@@ -324,6 +413,9 @@ struct ClaudeSkillParser {
                             addRead(path, time: time, to: &out)
                         } else if name == "Bash", let command = input["command"] as? String {
                             for path in SkillPaths.reads(inCommand: command) { addRead(path, time: time, to: &out) }
+                            for tool in SkillPaths.runs(inCommand: command) {
+                                out.events.append(SkillEvent(skill: tool, trigger: .cli, harness: "claude", time: time))
+                            }
                         }
                     }
                 } else if type == "user" {
@@ -351,7 +443,8 @@ struct ClaudeSkillParser {
     func addRead(_ path: String, time: Date?, to out: inout SkillFileScan) {
         let full = SkillPaths.expand(path, home: home)
         guard let name = SkillPaths.name(full) else { return }
-        out.events.append(SkillEvent(skill: name, trigger: .read, harness: "claude", time: time, path: full))
+        let subagent = file.path.contains("/subagents/")
+        out.events.append(SkillEvent(skill: name, trigger: subagent ? .subagentRead : .read, harness: "claude", time: time, path: full))
     }
 
     static func typed(_ content: Any?) -> String? {

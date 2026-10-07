@@ -71,6 +71,8 @@ final class AppModel {
 
     let home = FileManager.default.homeDirectoryForCurrentUser
     private var openLatestSessionOnLoad = false
+    /// A session to open once the history has loaded, from `-session <id>` (with or without the harness prefix).
+    private var openSessionOnLoad: String?
 
     /// Whether the app may read folders macOS guards (Documents, Desktop, iCloud Drive, other
     /// volumes). Without it, session folders there are listed but not read, so the user sees
@@ -88,6 +90,7 @@ final class AppModel {
             selectedDirectory = path
         }
         openLatestSessionOnLoad = args.contains("-latest-session")
+        if let i = args.firstIndex(of: "-session"), i + 1 < args.count { openSessionOnLoad = args[i + 1] }
         presets = presetStore.all()
         if let i = args.firstIndex(of: "-preset"), i + 1 < args.count { presetID = args[i + 1] }
         if !presets.contains(where: { $0.id == presetID }) { presetID = Preset.onDisk.id }
@@ -114,6 +117,10 @@ final class AppModel {
         if openLatestSessionOnLoad, let s = sessionsHere.first {
             openLatestSessionOnLoad = false
             select(source: .session(s.id))
+        }
+        if let id = openSessionOnLoad, let s = sessions.first(where: { $0.id == id || $0.id.hasSuffix(":" + id) }) {
+            openSessionOnLoad = nil
+            open(session: s.id, harness: s.harness, cwd: s.cwd, skill: nil)
         }
     }
 
@@ -305,7 +312,7 @@ final class AppModel {
             applyPreset()
             loadingSnapshot = false
             if let snap, !snap.items.contains(where: { $0.id == selectedItemID }) {
-                selectedItemID = visibleSections(of: snap).first?.items.first?.id
+                selectedItemID = snap.treeEntries(onlyProblems: onlyProblems).lazy.compactMap(\.item).first?.id
             }
         }
     }
@@ -502,11 +509,8 @@ final class AppModel {
         }
     }
 
-    func visibleSections(of snap: ContextSnapshot) -> [(kind: ContextKind, items: [ContextItem])] {
-        snap.sections.compactMap { section in
-            let items = onlyProblems ? section.items.filter(\.hasProblem) : section.items
-            return items.isEmpty ? nil : (section.kind, items)
-        }
+    func treeEntries(of snap: ContextSnapshot) -> [TreeEntry] {
+        snap.treeEntries(collapsed: collapsed, onlyProblems: onlyProblems)
     }
 
     func toggle(_ kind: ContextKind) {
@@ -515,7 +519,7 @@ final class AppModel {
 
     func moveItemSelection(_ delta: Int) {
         guard let snap = snapshot else { return }
-        let ids = visibleSections(of: snap).filter { !collapsed.contains($0.kind) }.flatMap { $0.items.map(\.id) }
+        let ids = treeEntries(of: snap).compactMap(\.item?.id)
         selectedItemID = Self.step(ids, from: selectedItemID, by: delta)
     }
 
@@ -535,10 +539,6 @@ final class AppModel {
         if path == h { return "~" }
         return path.hasPrefix(h + "/") ? "~" + path.dropFirst(h.count) : path
     }
-}
-
-extension ContextItem {
-    var hasProblem: Bool { !issues.isEmpty || diskStatus == .changed || diskStatus == .deleted }
 }
 
 extension ContextSnapshot {

@@ -24,6 +24,25 @@ import Testing
         #expect(SkillPaths.reads(inCommand: "head -5 packages/kit/skills/brew-tea/SKILL.md").isEmpty)
         #expect(SkillPaths.reads(inCommand: "cat ~/.claude/skills/*/SKILL.md").isEmpty)
     }
+
+    @Test func resolvesVariablesAndLoops() {
+        let loop = """
+        cd /tmp/x; echo $PWD
+        K=/Users/me/app/.claude/skills
+        for s in brew-tea sort-mail; do echo "== $s"; awk '/^## Detect/{p=1;next} /^## /{p=0} p' $K/$s/SKILL.md | head -20; done
+        """
+        #expect(SkillPaths.reads(inCommand: loop) == ["/Users/me/app/.claude/skills/brew-tea/SKILL.md", "/Users/me/app/.claude/skills/sort-mail/SKILL.md"])
+        #expect(SkillPaths.reads(inCommand: "D=\"$HOME/.claude/skills\"; cat ${D}/brew-tea/SKILL.md") == ["$HOME/.claude/skills/brew-tea/SKILL.md"])
+        // Unknown or computed variables name nothing.
+        #expect(SkillPaths.reads(inCommand: "cat $UNSET/brew-tea/SKILL.md").isEmpty)
+        #expect(SkillPaths.reads(inCommand: "K=$(pwd)/skills; cat $K/brew-tea/SKILL.md").isEmpty)
+    }
+
+    @Test func findsToolsStartedByPackageRunners() {
+        #expect(SkillPaths.runs(inCommand: "npx -y brew-tea-cli --help 2>&1 | head -60") == ["brew-tea-cli"])
+        #expect(SkillPaths.runs(inCommand: "cd x && bunx @acme/brew-tea@2.1 plan; pnpm dlx sort-mail") == ["brew-tea", "sort-mail"])
+        #expect(SkillPaths.runs(inCommand: "npm install brew-tea; echo npx brew-tea").isEmpty)
+    }
 }
 
 /// A throwaway home with Claude Code, Codex and Copilot CLI transcripts.
@@ -259,6 +278,32 @@ struct SkillFixture {
         let direct = scanner.session(files: scanner.scan(transcript: URL(filePath: path), harness: "claude"))
         #expect(direct?.skills.first { $0.name == "brew-tea" }?.triggers == ["model": 2, "subagent": 1])
         #expect(scanner.session("nothing-like-this") == nil)
+    }
+
+    @Test func countsSubagentReadsAndSkillTools() throws {
+        let s = try SkillFixture()
+        defer { s.f.cleanup() }
+        let project = ".claude/projects/-Users-me-code-app"
+        let main = [
+            s.assistant([["id": "m1", "name": "Bash", "input": ["command": "npx -y brew-tea-cli plan | head"]]]),
+            // A tool no installed skill is named after is not a use.
+            s.assistant([["id": "m2", "name": "Bash", "input": ["command": "npx -y prettier --check ."]]]),
+        ]
+        try s.f.write("\(project)/s2.jsonl", main.joined(separator: "\n") + "\n", base: s.home)
+        let skills = s.f.project.path + "/.claude/skills"
+        let fork = [
+            s.assistant([["id": "f1", "name": "Bash", "input": ["command": "K=\(skills)\nfor x in sort-mail; do sed -n 1,40p $K/$x/SKILL.md; done"]]]),
+            s.assistant([["id": "f2", "name": "Read", "input": ["file_path": s.home.path + "/.claude/skills/water-plants/SKILL.md"]]]),
+        ]
+        try s.f.write("\(project)/s2/subagents/agent-1.jsonl", fork.joined(separator: "\n") + "\n", base: s.home)
+
+        let scanner = SkillUsageScanner(env: s.f.env, cacheFile: s.cache)
+        let file = s.home.appending(path: "\(project)/s2.jsonl")
+        let session = try #require(scanner.session(files: scanner.scan(transcript: file, harness: "claude")))
+        let byName = Dictionary(uniqueKeysWithValues: session.skills.map { ($0.name, $0.triggers) })
+        #expect(byName == ["brew-tea": ["cli": 1], "sort-mail": ["subagentRead": 1], "water-plants": ["subagentRead": 1]])
+        // The cached scan finds the same.
+        #expect(scanner.session("claude:s2")?.skills.count == 3)
     }
 
     @Test func followsSymlinkedSkillsFolder() throws {

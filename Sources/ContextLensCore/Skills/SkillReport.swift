@@ -195,8 +195,13 @@ public enum SkillReportBuilder {
                 if let since, (e.time ?? f.modified) < since { continue }
                 inWindow = true
                 if e.trigger == .user, f.harness == "claude", !known.contains(e.skill), byFolder[e.skill] == nil { continue }
+                if e.trigger == .cli {
+                    // A tool counts only when an installed skill is named after it: `deckify` for `deckify-cli`.
+                    guard let skill = names.filter({ e.skill == $0 || e.skill.hasPrefix($0 + "-") }).max(by: { $0.count < $1.count }) else { continue }
+                    e.skill = skill
+                }
                 e.skill = canonical(e)
-                if e.trigger == .read {
+                if e.trigger.once {
                     if !read.insert(e.skill).inserted { continue }
                 } else if !e.failed {
                     loaded.insert(e.skill)
@@ -204,12 +209,12 @@ public enum SkillReportBuilder {
                 fileUses.append(Use(skill: e.skill, event: e, file: f))
             }
             // A session that loaded the skill and then read its SKILL.md used it once, not twice.
-            uses += fileUses.filter { $0.event.trigger != .read || !loaded.contains($0.skill) }
+            uses += fileUses.filter { !$0.event.trigger.once || !loaded.contains($0.skill) }
             if inWindow || since.map({ f.modified >= $0 }) ?? true { sessions.insert(f.session) }
         }
         // Reads are once per session across a parent and its subagent files too.
         var seenReads = Set<String>()
-        uses = uses.filter { $0.event.trigger != .read || seenReads.insert("\($0.file.session)|\($0.skill)").inserted }
+        uses = uses.filter { !$0.event.trigger.once || seenReads.insert("\($0.file.session)|\($0.skill)").inserted }
         return (uses, sessions)
     }
 

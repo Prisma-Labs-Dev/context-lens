@@ -148,6 +148,8 @@ public struct ContextItem: Identifiable, Hashable, Codable, Sendable {
     }
 
     public var tokens: Int { TokenEstimate.tokens(content) }
+
+    public var hasProblem: Bool { !issues.isEmpty || diskStatus == .changed || diskStatus == .deleted }
 }
 
 public enum TokenEstimate {

@@ -12,6 +12,8 @@ struct ContextTreeView: View {
                 if let s = model.selectedSession {
                     SessionBanner(session: s, snapshot: snap)
                     if let skills = model.sessionSkills, skills.id == s.id { SessionSkillsSection(skills: skills) }
+                } else if !model.sessionsHere.isEmpty {
+                    SkillsHint()
                 }
                 if model.presetIsActive { PresetBar() }
                 SummaryStrip(snapshot: snap)
@@ -19,8 +21,17 @@ struct ContextTreeView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(model.visibleSections(of: snap), id: \.kind) { section in
-                                TreeSection(kind: section.kind, items: section.items)
+                            // One flat row per header or item. With whole sections as the lazy
+                            // stack's children, every hover change re-placed a section of dozens of
+                            // rows, which moved hover targets again: a layout loop on the main thread.
+                            ForEach(model.treeEntries(of: snap)) { entry in
+                                switch entry {
+                                case .header(let kind, let count, let tokens, let open):
+                                    TreeHeader(kind: kind, count: count, tokens: tokens, open: open)
+                                case .item(let item):
+                                    TreeRow(item: item, selected: model.selectedItemID == item.id, editable: model.canEditPreset)
+                                        .onTapGesture { model.selectedItemID = item.id }
+                                }
                             }
                             if !snap.notes.isEmpty {
                                 VStack(alignment: .leading, spacing: 4) {
@@ -52,7 +63,7 @@ struct ContextTreeView: View {
     }
 
     private func scrollTo(_ proxy: ScrollViewProxy) {
-        if let id = model.selectedItemID { proxy.scrollTo(id) }
+        if let id = model.selectedItemID { proxy.scrollTo(TreeEntry.id(item: id)) }
     }
 }
 
@@ -124,17 +135,37 @@ struct SessionSkillsSection: View {
             .padding(.horizontal, 12)
             .padding(.top, 7)
             .padding(.bottom, skills.skills.isEmpty ? 7 : 3)
-            ForEach(skills.skills) { skill in
-                SessionSkillRow(skill: skill, started: skills.started, highlighted: model.highlightedSkill == skill.name) {
-                    model.skillsRequest = skill.name
-                    openWindow(id: "skills")
-                    NSApp.activate()
+            // Subagents can read many skills; past a few rows the list scrolls so the tree keeps its room.
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(skills.skills) { skill in
+                        SessionSkillRow(skill: skill, started: skills.started, highlighted: model.highlightedSkill == skill.name) {
+                            model.skillsRequest = skill.name
+                            openWindow(id: "skills")
+                            NSApp.activate()
+                        }
+                    }
                 }
             }
+            .frame(height: CGFloat(min(skills.skills.count, 7)) * 22)
+            .scrollDisabled(skills.skills.count <= 7)
         }
         .padding(.bottom, skills.skills.isEmpty ? 0 : 5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.hairline).frame(height: 1) }
+    }
+}
+
+/// In Now mode, where to find the skills a session used.
+struct SkillsHint: View {
+    var body: some View {
+        Label("Skills used shows for a past session: pick one from the Now menu above, or open Skills (⇧⌘K) › By session.",
+              systemImage: "sparkles")
+            .font(Theme.small).foregroundStyle(Theme.ink3).lineLimit(2)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .bottom) { Rectangle().fill(Theme.hairline).frame(height: 1) }
     }
 }
 
@@ -244,6 +275,7 @@ struct BudgetBar: View {
     }
 
     var body: some View {
+        let parts = parts
         let total = max(parts.reduce(0) { $0 + $1.tokens }, 1)
         VStack(alignment: .leading, spacing: 6) {
             GeometryReader { geo in
@@ -272,48 +304,39 @@ struct BudgetBar: View {
     }
 }
 
-struct TreeSection: View {
+/// A group's header in the tree. Click to fold the group.
+struct TreeHeader: View {
     @Environment(AppModel.self) private var model
     var kind: ContextKind
-    var items: [ContextItem]
+    var count: Int
+    var tokens: Int
+    var open: Bool
     @State private var hovering = false
 
     var body: some View {
-        let open = !model.collapsed.contains(kind)
-        let tokens = items.reduce(0) { $0 + $1.startingTokens }
-        VStack(alignment: .leading, spacing: 0) {
-            Button { model.toggle(kind) } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 8.5, weight: .bold))
-                        .rotationEffect(.degrees(open ? 90 : 0))
-                        .foregroundStyle(Theme.ink3)
-                        .frame(width: 10)
-                    Text(kind.title).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.ink2)
-                    Text("\(items.count)").font(.system(size: 10.5)).foregroundStyle(Theme.ink3)
-                    Spacer()
-                    if model.canEditPreset, let group = Preset.Group(kind: kind) {
-                        GroupSwitch(group: group)
-                    }
-                    if tokens > 0 { Text(Format.tokens(tokens)).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(Theme.ink3) }
+        Button { model.toggle(kind) } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .rotationEffect(.degrees(open ? 90 : 0))
+                    .foregroundStyle(Theme.ink3)
+                    .frame(width: 10)
+                Text(kind.title).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.ink2)
+                Text("\(count)").font(.system(size: 10.5)).foregroundStyle(Theme.ink3)
+                Spacer()
+                if model.canEditPreset, let group = Preset.Group(kind: kind) {
+                    GroupSwitch(group: group)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .background(hovering ? Theme.hover.opacity(0.6) : .clear)
-                .contentShape(Rectangle())
+                if tokens > 0 { Text(Format.tokens(tokens)).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(Theme.ink3) }
             }
-            .buttonStyle(.plain)
-            .onHover { hovering = $0 }
-            .padding(.top, 4)
-
-            if open {
-                ForEach(items) { item in
-                    TreeRow(item: item, selected: model.selectedItemID == item.id, editable: model.canEditPreset)
-                        .id(item.id)
-                        .onTapGesture { model.selectedItemID = item.id }
-                }
-            }
+            .padding(.horizontal, 12)
+            .frame(height: 24)
+            .background(hovering ? Theme.hover.opacity(0.6) : .clear)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .padding(.top, 4)
     }
 }
 
@@ -358,7 +381,7 @@ struct TreeRow: View {
         }
         .padding(.leading, editable ? 34 : 28)
         .padding(.trailing, 12)
-        .padding(.vertical, 4)
+        .frame(height: 22)
         .background(selected ? Theme.selection : (hovering ? Theme.hover : .clear))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
