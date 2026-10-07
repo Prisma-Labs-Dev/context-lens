@@ -318,7 +318,8 @@ public struct McpToggleEngine: Sendable {
             let p = projectServers?[name]?.table?["enabled"]?.bool
             toggles.append(McpToggle(
                 id: "codex|server|\(name)", harness: .codex, kind: .server, name: name, definedIn: definedIn,
-                servers: [name], on: p ?? u ?? true, state: Self.describe(user: u, project: nil, here: p, defaultOn: true),
+                servers: [name], on: p ?? u ?? true,
+                state: definedIn == "Project" && u == nil && p == nil ? "on here" : Self.describe(user: u, project: nil, here: p, defaultOn: true),
                 userValue: u, folderValue: p, scopes: (trusted ? [.folder] : []) + (definedIn == "User" ? [.user] : []),
                 note: trusted ? "This folder writes .codex/config.toml in the project, which Codex reads for trusted projects." : "This folder: Codex reads a project's .codex/config.toml only when the project is trusted."))
         }

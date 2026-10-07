@@ -404,4 +404,13 @@ import Testing
         try f.write(".codex/config.toml", "[mcp_servers.docs]\ncommand = \"docs\"\n", base: f.home)
         #expect(toggle(f, "codex|server|docs", harness: .codex).scopes == [.user])
     }
+
+    @Test func codexProjectServerIsOnHere() throws {
+        let f = try fixture()
+        defer { f.cleanup() }
+        try f.write(".codex/config.toml", "[projects.\"\(f.project.path)\"]\ntrust_level = \"trusted\"\n", base: f.home)
+        try f.write(".codex/config.toml", "[mcp_servers.repo-db]\ncommand = \"db\"\n", base: f.project)
+        let t = toggle(f, "codex|server|repo-db", harness: .codex)
+        #expect(t.definedIn == "Project" && t.state == "on here" && t.scopes == [.folder])
+    }
 }
