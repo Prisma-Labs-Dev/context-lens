@@ -24,6 +24,11 @@ that harness puts into its context there.
   A By session mode lists the skills each session used; a past session in the main window shows
   them above its context. Use is read from the transcripts (a skill tool call, a slash command, or
   a read of the skill's SKILL.md); no model is involved.
+- **Costs** (⇧⌘U): what Claude Code sessions cost at Anthropic list price over today, 7 or 30
+  days, by group, model and session: input, output and thinking, 5-minute and 1-hour cache
+  writes, cache reads and hit ratio, with the biggest cost drivers (large contexts, cold cache
+  restarts after idle gaps, subagents). Copilot CLI sessions are shown in AI credits.
+  `context-lens cost --brief` prints the same as text. See docs/costs.md.
 - **MCP settings** (the switch icon in the top bar, ⇧⌘M): switch each MCP server, and each plugin
   that brings MCP tools, on or off for this folder or everywhere, with its measured token cost and
   where its state comes from ("off everywhere, on here"). Unlike presets this edits the

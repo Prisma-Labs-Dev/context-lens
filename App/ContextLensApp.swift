@@ -26,6 +26,7 @@ struct ContextLensApp: App {
                     .disabled(model.selectedDirectory == nil)
                 HealthCommand()
                 SkillsCommand()
+                CostsCommand()
             }
         }
 
@@ -43,6 +44,13 @@ struct ContextLensApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1240, height: 820)
+
+        Window("Costs", id: "costs") {
+            CostsView()
+                .frame(minWidth: 1000, minHeight: 560)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1380, height: 820)
 
         MenuBarExtra {
             MenuBarMenu().environment(model)
@@ -71,6 +79,10 @@ struct MenuBarMenu: View {
         }
         Button("Skills") {
             openWindow(id: "skills")
+            NSApp.activate()
+        }
+        Button("Costs") {
+            openWindow(id: "costs")
             NSApp.activate()
         }
         Divider()
@@ -129,6 +141,16 @@ struct SkillsCommand: View {
     var body: some View {
         Button("Skills") { openWindow(id: "skills") }
             .keyboardShortcut("k", modifiers: [.command, .shift])
+    }
+}
+
+/// Window menu command for the Costs window (⌘⇧U).
+struct CostsCommand: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Costs") { openWindow(id: "costs") }
+            .keyboardShortcut("u", modifiers: [.command, .shift])
     }
 }
 
@@ -204,6 +226,8 @@ struct ContentView: View {
             if args.contains("-health") { openWindow(id: "health") }
             // `-skills` opens the Skills window too.
             if args.contains("-skills") { openWindow(id: "skills") }
+            // `-costs` opens the Costs window too.
+            if args.contains("-costs") { openWindow(id: "costs") }
             // `-mcp-settings` opens the MCP switches for the folder.
             if args.contains("-mcp-settings") { model.openMcpSwitches() }
         }

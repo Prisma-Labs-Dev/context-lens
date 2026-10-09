@@ -27,7 +27,13 @@ Usage:
                                                           across Claude Code, Codex and Copilot CLI, and installed skills none
                                                           used. Cached in ~/.context-lens/skills/
   context-lens skills --session <transcript|id>          The skills one session used, in order of first use
-  context-lens growth <transcript|id> [--all]             Claude Code: the first call's measured context against the transcript's
+  context-lens cost [--since today|24h|7d|30d|all] [--until YYYY-MM-DD] [--brief] [--top N]
+                                                          What Claude Code sessions cost at Anthropic list price (default 7d), by
+                                                          group, model and session, with cache hit ratio and cost drivers; Copilot
+                                                          CLI sessions in AI credits. --brief: plain text. Groups come from
+                                                          ~/.context-lens/cost-groups.json (docs/costs.md). Cached in ~/.context-lens/costs/
+  context-lens cost --reconcile [--since 7d]              Computed cost against Claude Code's own running total, per session
+  context-lens growth <transcript|id> [--all]           Claude Code: the first call's measured context against the transcript's
                                                           estimate, compactions, and the calls where the context grew most
                                                           (--all: every call)
   context-lens measure [<dir>] [--cached|--history]       Claude Code: run claude -p "/context" in a folder for the real token
@@ -57,7 +63,7 @@ struct Options {
         while let a = it.next() {
             if a.hasPrefix("--") {
                 let key = String(a.dropFirst(2))
-                if key == "help" || key == "all" || key == "cached" || key == "history" || key == "json" || key == "no-classify" || key == "dry-run" { flags[key] = "true" } else { flags[key] = it.next() ?? "" }
+                if key == "help" || key == "all" || key == "cached" || key == "history" || key == "json" || key == "no-classify" || key == "dry-run" || key == "brief" || key == "reconcile" { flags[key] = "true" } else { flags[key] = it.next() ?? "" }
             } else {
                 positional.append(a)
             }
@@ -208,6 +214,8 @@ case "skills":
     runSkills(opts)
 case "growth":
     runGrowth(opts)
+case "cost":
+    runCost(opts)
 case "mcp":
     runMcp(opts)
 case "measure":
