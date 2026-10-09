@@ -64,6 +64,10 @@ public struct AuthWindows: Codable, Sendable {
     public var usageURL: String?
     public var routes: [CostRoute] = []
     public var windows: [AuthWindow] = []
+    /// Why the file could not be read, when it exists but does not parse.
+    public var problem: String?
+
+    enum CodingKeys: String, CodingKey { case usageURL, routes, windows }
 
     public init(usageURL: String? = nil, routes: [CostRoute] = [], windows: [AuthWindow] = []) {
         self.usageURL = usageURL; self.routes = routes; self.windows = windows.sorted { $0.start < $1.start }
@@ -72,11 +76,29 @@ public struct AuthWindows: Codable, Sendable {
     public static func file(env: HarnessEnvironment = .current) -> URL { env.home.appending(path: ".context-lens/auth-windows.json") }
 
     public static func load(env: HarnessEnvironment = .current) -> AuthWindows {
-        guard let data = try? Data(contentsOf: file(env: env)) else { return AuthWindows() }
+        let url = file(env: env)
+        guard FileManager.default.fileExists(atPath: url.path) else { return AuthWindows() }
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
-        guard let w = try? dec.decode(AuthWindows.self, from: data) else { return AuthWindows() }
-        return AuthWindows(usageURL: w.usageURL, routes: w.routes, windows: w.windows)
+        do {
+            let w = try dec.decode(AuthWindows.self, from: Data(contentsOf: url))
+            return AuthWindows(usageURL: w.usageURL, routes: w.routes, windows: w.windows)
+        } catch {
+            var bad = AuthWindows()
+            bad.problem = "~/.context-lens/auth-windows.json was not read: \(Self.describe(error))"
+            return bad
+        }
+    }
+
+    static func describe(_ error: Error) -> String {
+        switch error {
+        case DecodingError.dataCorrupted(let c), DecodingError.typeMismatch(_, let c), DecodingError.valueNotFound(_, let c):
+            return "\(c.debugDescription) at \(c.codingPath.map(\.stringValue).joined(separator: "."))"
+        case DecodingError.keyNotFound(let k, let c):
+            return "missing \(k.stringValue) at \(c.codingPath.map(\.stringValue).joined(separator: "."))"
+        default:
+            return error.localizedDescription
+        }
     }
 
     public func route(id: String) -> CostRoute {
@@ -103,7 +125,6 @@ public struct AuthWindows: Codable, Sendable {
     /// as the route's key file. Compared only by hash; no key is kept or shown.
     public func configuredNow(env: HarnessEnvironment = .current) -> [AuthScope: String] {
         var out: [AuthScope: String] = [:]
-        let entra = routes.first { $0.auth?.kind == .entra }?.id
         func match(key: String?, helper: String?) -> String? {
             if let key, !key.isEmpty {
                 let digest = Self.hash(key)
@@ -112,8 +133,13 @@ public struct AuthWindows: Codable, Sendable {
                 }
                 return nil
             }
-            if let helper, helper.contains("get-access-token") { return entra }
-            return nil
+            // An Entra helper names its resource and tenant; more than one matching route is ambiguous.
+            guard let helper, helper.contains("get-access-token") else { return nil }
+            let entra = routes.filter { r in
+                guard let a = r.auth, a.kind == .entra, let resource = a.resource, let tenant = a.tenant else { return false }
+                return helper.contains(resource) && helper.contains(tenant)
+            }
+            return entra.count == 1 ? entra[0].id : nil
         }
         if let s = Self.json(env.claudeHome.appending(path: "settings.json")) {
             let envs = s["env"] as? [String: Any] ?? [:]
@@ -136,8 +162,10 @@ public struct AuthWindows: Codable, Sendable {
 
     /// Scopes whose configured route differs from the window in effect now: a switch nobody
     /// recorded yet.
+    /// Also reports a file that exists but does not parse.
     public func drift(env: HarnessEnvironment = .current, now: Date = Date()) -> [String] {
-        configuredNow(env: env).sorted { $0.key.rawValue < $1.key.rawValue }.compactMap { scope, id in
+        if let problem { return [problem] }
+        return configuredNow(env: env).sorted { $0.key.rawValue < $1.key.rawValue }.compactMap { scope, id in
             let current = windows.last { $0.start <= now && ($0.scope == scope || $0.scope == .all) }?.route
             guard current != id else { return nil }
             return "\(scope.rawValue) is set up for \(route(id: id).label), but auth-windows.json has \(current.map { route(id: $0).label } ?? "no window") now"
@@ -161,7 +189,7 @@ public struct AuthWindows: Codable, Sendable {
 /// What the gateway billed one route this month, from its usage API
 /// (`{subscription_id, month, cost_usd, tier, monthly_limit_usd}`), next to the list-price
 /// estimate of the calls attributed to the route in the same month.
-public struct GatewayUsage: Codable, Sendable, Hashable, Identifiable {
+public struct GatewayUsage: Encodable, Sendable, Hashable, Identifiable {
     public var id: String { route }
     public var route: String
     public var label: String
@@ -177,6 +205,17 @@ public struct GatewayUsage: Codable, Sendable, Hashable, Identifiable {
     public var remaining: Double? { billed.flatMap { b in limit.map { max(0, $0 - b) } } }
     /// Gateway price over list price.
     public var ratio: Double? { billed.flatMap { estimate > 0 ? $0 / estimate : nil } }
+
+    enum CodingKeys: String, CodingKey { case route, label, month, subscription, tier, billed, limit, remaining, estimate, ratio, error }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(route, forKey: .route); try c.encode(label, forKey: .label); try c.encode(month, forKey: .month)
+        try c.encodeIfPresent(subscription, forKey: .subscription); try c.encodeIfPresent(tier, forKey: .tier)
+        try c.encodeIfPresent(billed, forKey: .billed); try c.encodeIfPresent(limit, forKey: .limit)
+        try c.encodeIfPresent(remaining, forKey: .remaining); try c.encode(estimate, forKey: .estimate)
+        try c.encodeIfPresent(ratio, forKey: .ratio); try c.encodeIfPresent(error, forKey: .error)
+    }
 }
 
 public enum GatewayClient {

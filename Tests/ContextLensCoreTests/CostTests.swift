@@ -196,6 +196,36 @@ struct CostFixture {
         #expect(w.route(at: w.windows[0].start, kind: .terminal, entrypoint: "cli").label == "entra")
     }
 
+    @Test func reportsABrokenFile() throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        try f.write(".context-lens/auth-windows.json", #"{"windows": [{"start": "2026-10-01T10:20:00Z", "scope": "CLI", "route": "a"}]}"#, base: f.home)
+        let w = AuthWindows.load(env: f.env)
+        #expect(w.windows.isEmpty)
+        #expect(w.drift(env: f.env).first?.contains("auth-windows.json was not read") == true)
+        // No file is not a problem.
+        try FileManager.default.removeItem(at: AuthWindows.file(env: f.env))
+        #expect(AuthWindows.load(env: f.env).problem == nil)
+    }
+
+    @Test func routesWithOneLabelStaySeparate() {
+        var r = CostReport(until: Date())
+        r.cells = [CostCell(model: "m", harness: "h", route: "Key", routeID: "a"), CostCell(model: "m", harness: "h", route: "Key", routeID: "b")]
+        r.cells[0].credits = 1; r.cells[1].credits = 2
+        #expect(r.slices(by: [.route]).map(\.credits) == [2, 1])
+        #expect(r.slices(by: [.model]).map(\.credits) == [3])
+    }
+
+    @Test func encodesComputedFigures() throws {
+        var s = CostSlice(keys: ["Copilot seat"], groupKeys: ["copilot"])
+        s.credits = 4
+        let g = GatewayUsage(route: "a", label: "A", month: "2026-10", billed: 105, limit: 700, estimate: 100)
+        let json = String(decoding: try JSONEncoder().encode(Pair(slice: s, gateway: g)), as: UTF8.self)
+        #expect(json.contains(#""usd":0.04"#) && json.contains(#""remaining":595"#) && json.contains(#""ratio":1.05"#))
+    }
+
+    struct Pair: Encodable { var slice: CostSlice; var gateway: GatewayUsage }
+
     @Test func parsesDimensions() {
         #expect(CostDimension.parse("model, harness") == [.model, .harness])
         #expect(CostDimension.parse("route") == [.route])
@@ -245,13 +275,17 @@ struct CostFixture {
         try f.write(".claude/settings.json", #"{"apiKeyHelper": "echo dummy", "env": {"ANTHROPIC_CUSTOM_HEADERS": "api-key: synthetic-key-1"}}"#, base: f.home)
         let lib = "Library/Application Support/Claude-3p/configLibrary"
         try f.write("\(lib)/_meta.json", #"{"appliedId": "p1"}"#, base: f.home)
-        try f.write("\(lib)/p1.json", #"{"inferenceCredentialHelper": "/usr/local/bin/az", "inferenceCredentialHelperArgs": ["account", "get-access-token"]}"#, base: f.home)
+        try f.write("\(lib)/p1.json", #"{"inferenceCredentialHelper": "/usr/local/bin/az", "inferenceCredentialHelperArgs": ["account", "get-access-token", "--resource", "api://x", "--tenant", "t"]}"#, base: f.home)
         let w = AuthWindows(routes: [
             CostRoute(id: "entra", label: "Entra", auth: RouteAuth(kind: .entra, resource: "api://x", tenant: "t")),
             CostRoute(id: "team", label: "Team key", auth: RouteAuth(kind: .apiKey, keyFile: f.root.appending(path: "keys/team").path)),
         ], windows: [AuthWindow(start: .distantPast, scope: .all, route: "entra")])
         #expect(w.configuredNow(env: f.env) == [.cli: "team", .desktop: "entra"])
         #expect(w.drift(env: f.env) == ["cli is set up for Team key, but auth-windows.json has Entra now"])
+        // An Entra helper for another tenant is no route of ours.
+        var other = w
+        other.routes[0].auth?.tenant = "other"
+        #expect(other.configuredNow(env: f.env) == [.cli: "team"])
     }
 
     @Test func gatewayRatio() {

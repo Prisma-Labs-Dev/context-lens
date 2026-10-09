@@ -145,7 +145,9 @@ public enum CostDimension: String, Codable, Sendable, CaseIterable, Identifiable
 public struct CostCell: Codable, Sendable, Hashable {
     public var model: String
     public var harness: String
+    /// The route's label; `routeID` tells apart routes that share one.
     public var route: String
+    public var routeID: String
     public var totals = TokenTotals()
     /// Copilot AI credits.
     public var credits = 0.0
@@ -153,16 +155,29 @@ public struct CostCell: Codable, Sendable, Hashable {
     public func value(_ d: CostDimension) -> String {
         switch d { case .model: model; case .harness: harness; case .route: route }
     }
+
+    func key(_ d: CostDimension) -> String { d == .route ? routeID : value(d) }
 }
 
 /// Spend grouped by one or more dimensions. Every dollar here is an estimate: list price for
 /// Claude calls, `Pricing.copilotCredit` per Copilot credit.
-public struct CostSlice: Codable, Sendable, Hashable, Identifiable {
-    public var id: String { keys.joined(separator: " · ") }
+public struct CostSlice: Encodable, Sendable, Hashable, Identifiable {
+    public var id: String { groupKeys.joined(separator: "\u{1F}") }
+    /// What to show: model, harness label, route label.
     public var keys: [String]
+    /// What the slice groups by: route IDs rather than labels.
+    var groupKeys: [String]
     public var totals = TokenTotals()
     public var credits = 0.0
     public var usd: Double { totals.cost + credits * Pricing.copilotCredit }
+
+    enum CodingKeys: String, CodingKey { case keys, totals, credits, usd }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(keys, forKey: .keys); try c.encode(totals, forKey: .totals)
+        try c.encode(credits, forKey: .credits); try c.encode(usd, forKey: .usd)
+    }
 }
 
 /// A finding with the money attached, largest first.
@@ -227,11 +242,11 @@ public struct CostReport: Codable, Sendable {
     public func slices(by dims: [CostDimension]) -> [CostSlice] {
         var out: [[String]: CostSlice] = [:]
         for c in cells {
-            let keys = dims.map(c.value)
-            var s = out[keys] ?? CostSlice(keys: keys)
+            let group = dims.map(c.key)
+            var s = out[group] ?? CostSlice(keys: dims.map(c.value), groupKeys: group)
             s.totals.add(c.totals)
             s.credits += c.credits
-            out[keys] = s
+            out[group] = s
         }
         return out.values.sorted { ($0.usd, $1.id) > ($1.usd, $0.id) }
     }
@@ -244,7 +259,7 @@ public enum CostReportBuilder {
         struct CellKey: Hashable { var model: String, harness: String, route: CostRoute }
         var cells: [CellKey: CostCell] = [:]
         func cell(_ k: CellKey, _ update: (inout CostCell) -> Void) {
-            var c = cells[k] ?? CostCell(model: k.model, harness: k.harness, route: k.route.label)
+            var c = cells[k] ?? CostCell(model: k.model, harness: k.harness, route: k.route.label, routeID: k.route.id)
             update(&c)
             cells[k] = c
         }
