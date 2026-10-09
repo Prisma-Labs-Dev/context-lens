@@ -217,7 +217,7 @@ struct SlicesSection: View {
             let top = max(slices.map(\.usd).max() ?? 0, 0.01)
             ForEach(slices) { s in
                 HStack(spacing: 8) {
-                    Text(s.keys.joined(separator: " · ")).lineLimit(1).truncationMode(.middle).frame(width: 230, alignment: .leading)
+                    Text(s.keys.joined(separator: " · ")).lineLimit(1).truncationMode(.tail).frame(width: 300, alignment: .leading)
                         .help(s.keys.joined(separator: "\n"))
                     Text(Fmt.usd(s.usd)).font(Theme.monoSmall).monospacedDigit().frame(width: 66, alignment: .trailing)
                     GeometryReader { geo in
@@ -227,7 +227,7 @@ struct SlicesSection: View {
                     }
                     Text(s.credits > 0 ? String(format: "%.0f cr", s.credits) : "\(s.totals.calls)")
                         .font(Theme.small).foregroundStyle(Theme.ink3).frame(width: 52, alignment: .trailing)
-                        .help(s.credits > 0 ? "Copilot AI credits, at $\(Pricing.copilotCredit) each" : "calls")
+                        .help(s.credits > 0 ? "Copilot AI credits, at " + String(format: "$%.2f", Pricing.copilotCredit) + " each (est.)" : "calls")
                 }
                 .font(.system(size: 12))
                 .padding(.horizontal, 14)
