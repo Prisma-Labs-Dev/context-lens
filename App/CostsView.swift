@@ -234,7 +234,7 @@ struct SlicesSection: View {
                 .frame(height: 22)
             }
             if model.dims.contains(.route), report.routeEstimates[CostRoute.unknown.id] ?? 0 > 0 {
-                Text("Unknown route: calls no window in ~/.context-lens/auth-windows.json covers.")
+                Text("Unknown route: calls no window in ~/.context-lens/auth-windows.json covers. To assign them, add a window for their scope (cli or desktop) that starts earlier.")
                     .font(Theme.small).foregroundStyle(Theme.ink3).padding(.horizontal, 14).padding(.top, 4)
             }
         }
@@ -248,11 +248,11 @@ struct BudgetsSection: View {
 
     var body: some View {
         if !model.gateway.isEmpty || model.gatewayLoading || !model.drift.isEmpty {
-            ListSection(title: "Budgets", trailing: model.gateway.first.map { "gateway, \($0.month)" } ?? (model.gatewayLoading ? "asking the gateway…" : nil)) {
+            ListSection(title: "Budgets", trailing: model.gateway.first.map { "billed, \($0.month)" } ?? (model.gatewayLoading ? "asking the gateway…" : nil)) {
                 Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 4) {
                     GridRow {
                         Text("route").gridColumnAlignment(.leading)
-                        Text("billed"); Text("limit"); Text("left"); Text("est. list"); Text("gateway/list")
+                        Text("billed"); Text("limit"); Text("left"); Text("est."); Text("billed/est.")
                     }
                     .font(Theme.small).foregroundStyle(Theme.ink3)
                     ForEach(model.gateway) { g in
@@ -261,10 +261,11 @@ struct BudgetsSection: View {
                             if let e = g.error {
                                 Text(e).foregroundStyle(Theme.stale).lineLimit(1).gridCellColumns(5).frame(maxWidth: .infinity, alignment: .leading)
                             } else {
-                                Text(g.billed.map(Fmt.usd) ?? "?")
-                                Text(g.limit.map(Fmt.usd) ?? "")
-                                Text(g.remaining.map(Fmt.usd) ?? "").foregroundStyle(g.remaining == 0 ? Theme.stale : Theme.ink)
-                                Text(Fmt.usd(g.estimate))
+                                let amount = { (v: Double) -> String in g.credits ? String(format: "%.0f cr", v) : Fmt.usd(v) }
+                                Text(g.billed.map(amount) ?? "?")
+                                Text(g.limit.map(amount) ?? "")
+                                Text(g.remaining.map(amount) ?? "").foregroundStyle(g.remaining == 0 ? Theme.stale : Theme.ink)
+                                Text(amount(g.estimate))
                                 Text(g.ratio.map { String(format: "%.2f", $0) } ?? "")
                             }
                         }

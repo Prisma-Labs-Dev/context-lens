@@ -291,7 +291,7 @@ public enum CostReportBuilder {
                     // Copilot writes Claude IDs with dots (`claude-opus-5.5`); the model slice uses Anthropic's.
                     var model = Pricing.normalize(step.model ?? f.copilotModel ?? "copilot")
                     if model.hasPrefix("claude-") { model = model.replacingOccurrences(of: ".", with: "-") }
-                    cell(CellKey(model: model, harness: CostKind.copilot.harness, route: .copilot)) { $0.credits += step.credits }
+                    cell(CellKey(model: model, harness: CostKind.copilot.harness, route: auth.route(id: CostRoute.copilot.id))) { $0.credits += step.credits }
                 }
                 let times = steps.map(\.time) + f.calls.map(\.time).filter(inWindow)
                 var s = SessionCost(id: f.session, title: f.title ?? "Copilot session", group: CostKind.copilot.label, kind: .copilot,

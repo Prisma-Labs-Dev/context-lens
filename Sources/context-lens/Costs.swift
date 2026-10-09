@@ -134,23 +134,25 @@ enum CostBrief {
         lines.append("  " + pad("total", widths.reduce(0, +) + 2 * (widths.count - 1)) + "  " + lpad(usd(total), 10))
         if !gateway.isEmpty {
             lines.append("")
-            lines.append("Gateway, \(gateway[0].month) (billed by the usage API; est. = list price of this month's calls on the route):")
+            lines.append("Billed this month (usage API or quota command; est. = list price of this month's calls on the route, Copilot in credits):")
             for g in gateway {
                 if let e = g.error {
                     lines.append("  \(pad(g.label, 24)) unavailable: \(e)")
                     continue
                 }
-                var line = "  \(pad(g.label, 24)) billed \(lpad(g.billed.map(usd) ?? "?", 9))"
-                if let l = g.limit { line += " of \(usd(l)), \(usd(g.remaining ?? 0)) left" }
-                line += "  ·  est. list \(usd(g.estimate))"
-                if let ratio = g.ratio { line += "  ·  gateway/list \(String(format: "%.2f", ratio))" }
+                let amount = { (v: Double) -> String in g.credits ? String(format: "%.0f cr", v) : usd(v) }
+                var line = "  \(pad(g.label, 24)) \(g.month) billed \(lpad(g.billed.map(amount) ?? "?", 9))"
+                if let l = g.limit { line += " of \(amount(l)), \(amount(g.remaining ?? 0)) left" }
+                line += "  ·  est. \(g.credits ? "" : "list ")\(amount(g.estimate))"
+                if let ratio = g.ratio { line += "  ·  billed/est. \(String(format: "%.2f", ratio))" }
                 if let sub = g.subscription { line += "  [\(sub)\(g.tier.map { ", " + $0 } ?? "")]" }
                 lines.append(line)
             }
         }
         if r.routeEstimates[CostRoute.unknown.id] ?? 0 > 0 {
             lines.append("")
-            lines.append("Unknown route: calls no window in ~/.context-lens/auth-windows.json covers.")
+            lines.append("Unknown route: calls no window in ~/.context-lens/auth-windows.json covers. To assign them, add a window")
+            lines.append("for their scope with an earlier start, such as {\"start\": \"2026-09-01T00:00:00Z\", \"scope\": \"cli\", \"route\": \"<id>\"}.")
         }
         for d in drift { lines.append("Note: \(d).") }
         return lines.joined(separator: "\n")

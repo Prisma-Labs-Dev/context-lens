@@ -4,7 +4,8 @@ import Foundation
 /// Which budget a call drew from. Transcripts do not record auth, so a call's route is the one in
 /// effect when it was made, read from time windows in `~/.context-lens/auth-windows.json`
 /// (docs/costs.md). Two routes need no window: the desktop app on a claude.ai account (entrypoint
-/// `claude-desktop`) and Copilot CLI (the Copilot seat).
+/// `claude-desktop`) and Copilot CLI (the Copilot seat). A route in the file with their ID
+/// (`claude.ai`, `copilot`) relabels them or gives them a billed figure.
 public struct CostRoute: Codable, Sendable, Hashable {
     public var id: String
     public var label: String
@@ -18,10 +19,13 @@ public struct CostRoute: Codable, Sendable, Hashable {
     public static let unknown = CostRoute(id: "unknown", label: "Unknown route")
 }
 
-/// Credentials for the usage API. Key values are never stored here: `keyFile` names a file that
-/// is read at request time and goes only into the request header.
+/// Where a route's billed figure comes from. Key values are never stored here: `keyFile` names a
+/// file that is read at request time and goes only into the request header.
 public struct RouteAuth: Codable, Sendable, Hashable {
-    public enum Kind: String, Codable, Sendable { case entra, apiKey }
+    /// `entra` and `apiKey` ask the usage API; `command` runs a quota tool that prints
+    /// `{"sources": [{"id", "account", "period", "metrics": [{"id", "unit", "used", "entitlement"}]}]}`,
+    /// cached for five minutes.
+    public enum Kind: String, Codable, Sendable { case entra, apiKey, command }
     public var kind: Kind
     /// Entra: `az account get-access-token --resource <resource> --tenant <tenant>`.
     public var resource: String?
@@ -29,9 +33,16 @@ public struct RouteAuth: Codable, Sendable, Hashable {
     /// API key: the header name (such as `api-key`) and the file holding the key.
     public var header: String?
     public var keyFile: String?
+    /// Command: the program and its arguments, and which source and metric to read. A metric
+    /// with unit `count` is AI credits; `currency` is USD.
+    public var command: [String]?
+    public var source: String?
+    public var metric: String?
 
-    public init(kind: Kind, resource: String? = nil, tenant: String? = nil, header: String? = nil, keyFile: String? = nil) {
+    public init(kind: Kind, resource: String? = nil, tenant: String? = nil, header: String? = nil, keyFile: String? = nil,
+                command: [String]? = nil, source: String? = nil, metric: String? = nil) {
         self.kind = kind; self.resource = resource; self.tenant = tenant; self.header = header; self.keyFile = keyFile
+        self.command = command; self.source = source; self.metric = metric
     }
 }
 
@@ -107,17 +118,17 @@ public struct AuthWindows: Codable, Sendable {
 
     /// The route in effect for a call at `time` from a session of `kind`, started through `entrypoint`.
     public func route(at time: Date, kind: CostKind, entrypoint: String?) -> CostRoute {
-        if kind == .copilot { return .copilot }
+        if kind == .copilot { return route(id: CostRoute.copilot.id) }
         let scope: AuthScope
         if let e = entrypoint, e.hasPrefix("claude-desktop") || e.hasPrefix("desktop") {
             // The desktop app signed in to claude.ai, not to a gateway.
-            if e == "claude-desktop" || e == "desktop" { return .claudeAI }
+            if e == "claude-desktop" || e == "desktop" { return route(id: CostRoute.claudeAI.id) }
             scope = .desktop
         } else {
             scope = .cli
         }
         let w = windows.last { $0.start <= time && ($0.scope == scope || $0.scope == .all) }
-        return w.map { route(id: $0.route) } ?? .unknown
+        return route(id: w?.route ?? CostRoute.unknown.id)
     }
 
     /// The route each install is set up for now, read from its settings: Entra when the credential
@@ -186,9 +197,10 @@ public struct AuthWindows: Codable, Sendable {
     static func hash(_ s: String) -> String { SHA256.hash(data: Data(s.utf8)).map { String(format: "%02x", $0) }.joined() }
 }
 
-/// What the gateway billed one route this month, from its usage API
-/// (`{subscription_id, month, cost_usd, tier, monthly_limit_usd}`), next to the list-price
-/// estimate of the calls attributed to the route in the same month.
+/// What one route was billed this month, from the gateway's usage API
+/// (`{subscription_id, month, cost_usd, tier, monthly_limit_usd}`) or a quota command, next to
+/// the estimate for the calls attributed to the route in the same month. In USD, or in AI credits
+/// when `credits` is set.
 public struct GatewayUsage: Encodable, Sendable, Hashable, Identifiable {
     public var id: String { route }
     public var route: String
@@ -198,15 +210,17 @@ public struct GatewayUsage: Encodable, Sendable, Hashable, Identifiable {
     public var tier: String?
     public var billed: Double?
     public var limit: Double?
-    /// List-price estimate of this month's calls on the route.
+    /// List-price estimate of this month's calls on the route, in the route's unit.
     public var estimate = 0.0
     public var error: String?
+    /// Billed, limit and estimate count Copilot AI credits rather than dollars.
+    public var credits = false
 
     public var remaining: Double? { billed.flatMap { b in limit.map { max(0, $0 - b) } } }
     /// Gateway price over list price.
     public var ratio: Double? { billed.flatMap { estimate > 0 ? $0 / estimate : nil } }
 
-    enum CodingKeys: String, CodingKey { case route, label, month, subscription, tier, billed, limit, remaining, estimate, ratio, error }
+    enum CodingKeys: String, CodingKey { case route, label, month, subscription, tier, billed, limit, remaining, estimate, ratio, error, credits }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -215,6 +229,7 @@ public struct GatewayUsage: Encodable, Sendable, Hashable, Identifiable {
         try c.encodeIfPresent(billed, forKey: .billed); try c.encodeIfPresent(limit, forKey: .limit)
         try c.encodeIfPresent(remaining, forKey: .remaining); try c.encode(estimate, forKey: .estimate)
         try c.encodeIfPresent(ratio, forKey: .ratio); try c.encodeIfPresent(error, forKey: .error)
+        try c.encode(credits, forKey: .credits)
     }
 }
 
@@ -233,14 +248,20 @@ public enum GatewayClient {
         return cal.date(from: cal.dateComponents([.year, .month], from: d))!
     }
 
-    /// Asks the usage API about every route with auth. `estimates` is list price per route ID for
-    /// the same month. Read-only: one GET per route.
-    public static func fetch(_ auth: AuthWindows, estimates: [String: Double], month: String = month()) -> [GatewayUsage] {
-        guard let base = auth.usageURL, var url = URLComponents(string: base) else { return [] }
-        url.queryItems = [URLQueryItem(name: "month", value: month)]
-        return auth.routes.filter { $0.auth != nil }.map { r in
+    /// Asks about every route with auth. `estimates` is list price per route ID in USD for the
+    /// same month. Read-only: one GET or one cached quota command per route. A route whose
+    /// command is not installed is left out.
+    public static func fetch(_ auth: AuthWindows, estimates: [String: Double], month: String = month(),
+                             cacheFile: URL? = nil) -> [GatewayUsage] {
+        auth.routes.compactMap { r -> GatewayUsage? in
+            guard let a = r.auth else { return nil }
             var out = GatewayUsage(route: r.id, label: r.label, month: month, estimate: estimates[r.id] ?? 0)
+            if a.kind == .command {
+                return QuotaCommand.read(a, into: out, cacheFile: cacheFile ?? HarnessEnvironment.current.home.appending(path: ".context-lens/costs/quota-cache.json"))
+            }
             do {
+                guard let base = auth.usageURL, var url = URLComponents(string: base) else { throw GatewayError("no usageURL") }
+                url.queryItems = [URLQueryItem(name: "month", value: month)]
                 let header = try credential(r.auth!)
                 var req = URLRequest(url: url.url!, timeoutInterval: 20)
                 req.setValue("application/json", forHTTPHeaderField: "accept")
@@ -267,6 +288,8 @@ public enum GatewayClient {
 
     static func credential(_ a: RouteAuth) throws -> (name: String, value: String) {
         switch a.kind {
+        case .command:
+            throw GatewayError("a command route has no credential")
         case .apiKey:
             guard let file = a.keyFile, let key = AuthWindows.readKey(file) else { throw GatewayError("no key in keyFile") }
             return (a.header ?? "api-key", key)
@@ -302,5 +325,85 @@ public enum GatewayClient {
         }.resume()
         done.wait()
         return try result.get()
+    }
+}
+
+/// Runs a quota tool that prints JSON and reads one source's metric. The output is
+/// cached for five minutes, keyed by the command, so a window refresh does not start it again.
+enum QuotaCommand {
+    static let ttl: TimeInterval = 300
+
+    struct CacheEntry: Codable {
+        var time: Date
+        var output: Data
+    }
+
+    /// Nil when the tool is not installed: a missing optional source is left out quietly.
+    static func read(_ a: RouteAuth, into usage: GatewayUsage, cacheFile: URL, now: Date = Date()) -> GatewayUsage? {
+        guard let command = a.command, !command.isEmpty else {
+            var out = usage
+            out.error = "command route needs a command"
+            return out
+        }
+        var out = usage
+        let key = command.joined(separator: " ")
+        var cache = (try? JSONDecoder().decode([String: CacheEntry].self, from: Data(contentsOf: cacheFile))) ?? [:]
+        let data: Data
+        if let hit = cache[key], now.timeIntervalSince(hit.time) < ttl, hit.time <= now {
+            data = hit.output
+        } else {
+            guard let run = run(command) else { return nil }
+            guard run.status == 0 else {
+                out.error = "\(command[0]) exited with \(run.status)"
+                return out
+            }
+            data = run.output
+            cache[key] = CacheEntry(time: now, output: data)
+            try? FileManager.default.createDirectory(at: cacheFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? JSONEncoder().encode(cache).write(to: cacheFile, options: .atomic)
+        }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sources = obj["sources"] as? [[String: Any]],
+              let source = sources.first(where: { $0["id"] as? String == a.source }) else {
+            out.error = "no source \(a.source ?? "?") in the output of \(command[0])"
+            return out
+        }
+        guard source["available"] as? Bool ?? true else {
+            out.error = source["unavailableReason"] as? String ?? "source unavailable"
+            return out
+        }
+        let metrics = source["metrics"] as? [[String: Any]] ?? []
+        guard let metric = metrics.first(where: { $0["id"] as? String == a.metric }) ?? (a.metric == nil ? metrics.first : nil) else {
+            out.error = "no metric \(a.metric ?? "?") in source \(a.source ?? "?")"
+            return out
+        }
+        func num(_ k: String) -> Double? { (metric[k] as? NSNumber)?.doubleValue }
+        out.credits = metric["unit"] as? String == "count"
+        out.billed = num("used")
+        out.limit = metric["unlimited"] as? Bool == true ? nil : num("entitlement")
+        out.subscription = source["account"] as? String
+        out.tier = source["plan"] as? String
+        if let period = source["period"] as? String { out.month = period }
+        // The estimate comes in USD; a credit route compares credits.
+        if out.credits { out.estimate /= Pricing.copilotCredit }
+        return out
+    }
+
+    /// Nil when the program is not found.
+    static func run(_ command: [String]) -> (status: Int32, output: Data)? {
+        let p = Process()
+        p.executableURL = URL(filePath: "/usr/bin/env")
+        p.arguments = command
+        var e = ProcessInfo.processInfo.environment
+        e["PATH"] = (e["PATH"].map { $0 + ":" } ?? "") + "/opt/homebrew/bin:/usr/local/bin"
+        p.environment = e
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        // env exits 127 when it cannot find the program.
+        return p.terminationStatus == 127 ? nil : (p.terminationStatus, data)
     }
 }

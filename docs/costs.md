@@ -53,8 +53,13 @@ both. A window lasts until the next window for the same scope.
 ```
 
 Two routes need no window: the desktop app signed in to claude.ai (entrypoint `claude-desktop`,
-without `-3p`) is "claude.ai account", and Copilot CLI is "Copilot seat". A call no window covers
-is "Unknown route".
+without `-3p`) is "claude.ai account", and Copilot CLI is "Copilot seat". Add a route with ID
+`claude.ai` or `copilot` to relabel them or give them a billed figure. A call no window covers is
+"Unknown route"; to assign such calls, add a window for their scope that starts before them.
+
+Changing credentials does not move sessions that are already running: a Claude Code process may
+keep the header or helper token it started with until it restarts, so the first hours after a
+switch can be attributed to the new route while some calls still went to the old one.
 
 To fill the file, date each switch from what changed: the mtime of `~/.claude/settings.json`
 (`apiKeyHelper`, `ANTHROPIC_CUSTOM_HEADERS`) and, for the desktop app, of
@@ -75,6 +80,16 @@ monthly_limit_usd}`. Entra routes send `Authorization: Bearer` with a token from
 `keyFile` at request time and send it in `header`. Shown per route: billed this month, limit,
 what is left, the list-price estimate of the month's calls on the route, and gateway over list.
 If the ratio drifts far from 1, either the gateway prices differently or the windows are wrong.
+
+A route can also take its billed figure from a quota tool that prints JSON with
+`sources[].metrics[]` (a platform CLI's quota command, say). The output is cached for five minutes in
+`~/.context-lens/costs/quota-cache.json`; if the tool is not installed, the route is left out
+quietly. A metric with unit `count` is read as AI credits, and its estimate is the route's credits.
+
+```json
+{"id": "copilot", "label": "Copilot seat",
+ "auth": {"kind": "command", "command": ["quota-tool", "--json"], "source": "copilot", "metric": "premium"}}
+```
 
 The usage API counts everything billed to the subscription, including use from other machines or
 tools; the estimate counts only transcripts on this Mac.

@@ -224,6 +224,29 @@ struct CostFixture {
         #expect(json.contains(#""usd":0.04"#) && json.contains(#""remaining":595"#) && json.contains(#""ratio":1.05"#))
     }
 
+    @Test func readsAQuotaCommandAndCachesIt() throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        let out = f.root.appending(path: "quota.json")
+        try f.write("quota.json", #"{"sources": [{"id": "genai", "account": "team-sub", "plan": "basic", "period": "2026-10", "metrics": [{"id": "spend", "unit": "currency", "used": 61.5, "entitlement": 700}]}, {"id": "seat", "available": true, "metrics": [{"id": "premium", "unit": "count", "used": 6000, "entitlement": 70000}, {"id": "chat", "unit": "count", "unlimited": true, "used": 0}]}]}"#)
+        let cache = f.root.appending(path: "cache/quota.json")
+        let w = AuthWindows(routes: [
+            CostRoute(id: "team", label: "Team", auth: RouteAuth(kind: .command, command: ["cat", out.path], source: "genai", metric: "spend")),
+            CostRoute(id: "copilot", label: "Seat", auth: RouteAuth(kind: .command, command: ["cat", out.path], source: "seat", metric: "premium")),
+            CostRoute(id: "gone", label: "Gone", auth: RouteAuth(kind: .command, command: ["no-such-quota-tool-1"], source: "x")),
+        ])
+        let g = GatewayClient.fetch(w, estimates: ["team": 60, "copilot": 58], month: "2026-10", cacheFile: cache)
+        // A tool that is not installed is left out.
+        #expect(g.map(\.route) == ["team", "copilot"])
+        #expect(g[0].billed == 61.5 && g[0].limit == 700 && g[0].subscription == "team-sub" && !g[0].credits)
+        #expect(g[1].credits && g[1].billed == 6000 && g[1].remaining == 64000)
+        #expect(abs(g[1].estimate - 5800) < 1e-6 && abs(g[1].ratio! - 6000.0 / 5800) < 1e-9)
+        // Within five minutes the cached output is used, even if the tool now says otherwise.
+        try f.write("quota.json", #"{"sources": []}"#)
+        #expect(GatewayClient.fetch(w, estimates: [:], cacheFile: cache).first?.billed == 61.5)
+        #expect(w.route(at: Date(), kind: .copilot, entrypoint: nil).label == "Seat")
+    }
+
     struct Pair: Encodable { var slice: CostSlice; var gateway: GatewayUsage }
 
     @Test func parsesDimensions() {
@@ -237,7 +260,7 @@ struct CostFixture {
         defer { x.f.cleanup() }
         let w = AuthWindows(routes: [CostRoute(id: "a", label: "Route A"), CostRoute(id: "b", label: "Route B")], windows: [
             AuthWindow(start: x.t0 - 10, scope: .all, route: "a"),
-            AuthWindow(start: x.t0 + 100, scope: .desktop, route: "b"),
+            AuthWindow(start: x.t0 + 90, scope: .desktop, route: "b"),
         ])
         let r = CostReportBuilder.build(files: x.scanner.scan(), since: Date().addingTimeInterval(-7 * 86_400), auth: w)
 
