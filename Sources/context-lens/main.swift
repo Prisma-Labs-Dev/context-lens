@@ -33,6 +33,10 @@ Usage:
                                                           CLI sessions in AI credits. --brief: plain text. Groups come from
                                                           ~/.context-lens/cost-groups.json (docs/costs.md). Cached in ~/.context-lens/costs/
   context-lens cost --reconcile [--since 7d]              Computed cost against Claude Code's own running total, per session
+  context-lens cost --by model,harness,route [--since today] [--json] [--no-gateway]
+                                                          Spend sliced by any combination (est.). With route: what each budget's
+                                                          gateway billed this month against the list-price estimate. Routes come
+                                                          from time windows in ~/.context-lens/auth-windows.json (docs/costs.md)
   context-lens growth <transcript|id> [--all]           Claude Code: the first call's measured context against the transcript's
                                                           estimate, compactions, and the calls where the context grew most
                                                           (--all: every call)
@@ -63,7 +67,7 @@ struct Options {
         while let a = it.next() {
             if a.hasPrefix("--") {
                 let key = String(a.dropFirst(2))
-                if key == "help" || key == "all" || key == "cached" || key == "history" || key == "json" || key == "no-classify" || key == "dry-run" || key == "brief" || key == "reconcile" { flags[key] = "true" } else { flags[key] = it.next() ?? "" }
+                if key == "help" || key == "all" || key == "cached" || key == "history" || key == "json" || key == "no-classify" || key == "dry-run" || key == "brief" || key == "reconcile" || key == "no-gateway" { flags[key] = "true" } else { flags[key] = it.next() ?? "" }
             } else {
                 positional.append(a)
             }

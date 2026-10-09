@@ -1,15 +1,93 @@
 # Costs
 
 The Costs window (⇧⌘U, or Costs in the menu bar menu) and `context-lens cost` show what Claude
-Code sessions cost at Anthropic list price, from the usage each transcript records. Nothing is
-sent anywhere; no model is called.
+Code sessions cost at Anthropic list price, from the usage each transcript records, sliced by
+model, harness and route (the budget a call drew from). No model is called. The only network
+requests are read-only GETs to the gateway's usage API, for routes that have auth set up.
+
+Every dollar computed from transcripts is an estimate and is labelled "est.": list price for
+Claude calls, $0.01 per Copilot AI credit. Only the gateway's "billed" figures are not estimates.
 
 ```bash
 context-lens cost --since 7d --brief      # plain text: totals, groups, models, top sessions, drivers
 context-lens cost --since today           # the full report as JSON
 context-lens cost --since all --until 2026-10-07
 context-lens cost --reconcile --since 7d  # computed cost against Claude Code's own total, per session
+context-lens cost --since today --by route          # per budget, plus what each gateway billed this month
+context-lens cost --since 7d --by model,harness     # any combination of model, harness, route
+context-lens cost --by route --json --no-gateway    # JSON, without asking the usage API
 ```
+
+## Slices
+
+In the window, Slices has a toggle per dimension. Turn on several to combine them; the number on
+a toggle is its position in the grouping. `--by` takes the same names, in the order to group by.
+
+- **Model**: the model ID without its date or `[1m]` suffix. Copilot's dotted Claude IDs
+  (`claude-opus-5.5`) read as Anthropic's.
+- **Harness**: Claude Code CLI (interactive terminal, entrypoint `cli`), Desktop Code tab
+  (`claude-desktop*`), Headless (`claude -p`, entrypoints `sdk-*`), Background (`claude --bg`: a
+  folder for the session under `~/.claude/jobs`, whatever its entrypoint), Subagents and
+  Copilot CLI.
+- **Route**: see below.
+
+## Routes
+
+Transcripts do not record which credentials a call used, so a call's route is the one in effect
+when it was made. `~/.context-lens/auth-windows.json` lists the routes and, per scope, the time
+each one took over. `cli` covers the terminal CLI and everything it starts (headless runs,
+background jobs, their subagents); `desktop` the desktop app's Code tab and its subagents; `all`
+both. A window lasts until the next window for the same scope.
+
+```json
+{"usageURL": "https://gateway.example/usage/anthropic/",
+ "routes": [
+   {"id": "entra", "label": "Entra ID", "auth": {"kind": "entra", "resource": "api://<app id>", "tenant": "<tenant id>"}},
+   {"id": "team", "label": "Team key", "auth": {"kind": "apiKey", "header": "api-key", "keyFile": "~/.config/keys/team.key"}},
+   {"id": "other", "label": "Other key"}
+ ],
+ "windows": [
+   {"start": "2026-09-01T09:00:00+02:00", "scope": "all", "route": "entra"},
+   {"start": "2026-10-01T10:20:00+02:00", "scope": "cli", "route": "team", "note": "settings.json switched"}
+ ]}
+```
+
+Two routes need no window: the desktop app signed in to claude.ai (entrypoint `claude-desktop`,
+without `-3p`) is "claude.ai account", and Copilot CLI is "Copilot seat". A call no window covers
+is "Unknown route".
+
+To fill the file, date each switch from what changed: the mtime of `~/.claude/settings.json`
+(`apiKeyHelper`, `ANTHROPIC_CUSTOM_HEADERS`) and, for the desktop app, of
+`~/Library/Application Support/Claude-3p/configLibrary/_meta.json` (`appliedId` names the active
+profile). A settings file's mtime is its last edit, not necessarily the switch, so check the
+`note`s against backups. The window and `--by route` warn when an install is set up for a
+different route than the window in effect now: Entra when the credential helper runs
+`az account get-access-token`, a key route when the configured `api-key` header and the route's
+`keyFile` have the same SHA-256. Keys are compared by hash only; none is stored, cached or
+printed.
+
+### Gateway figures
+
+For every route with `auth`, the window's Budgets section and `--by route` ask
+`<usageURL>?month=YYYY-MM` (UTC month) for `{subscription_id, month, cost_usd, tier,
+monthly_limit_usd}`. Entra routes send `Authorization: Bearer` with a token from
+`az account get-access-token --resource <resource> --tenant <tenant>`; key routes read
+`keyFile` at request time and send it in `header`. Shown per route: billed this month, limit,
+what is left, the list-price estimate of the month's calls on the route, and gateway over list.
+If the ratio drifts far from 1, either the gateway prices differently or the windows are wrong.
+
+The usage API counts everything billed to the subscription, including use from other machines or
+tools; the estimate counts only transcripts on this Mac.
+
+## Copilot credits in dollars
+
+Copilot CLI records AI credits (`totalNanoAiu` / 1e9). GitHub prices one AI credit at $0.01 USD
+for usage beyond a plan's included credits
+(<https://docs.github.com/copilot/concepts/billing/usage-based-billing-for-organizations-and-enterprises>,
+read 2026-10-09; Business includes 1,900 credits per user a month, Enterprise 3,900). The cost
+view multiplies credits by $0.01 and labels the result "est.": included credits cost the seat,
+not extra money, so this is what the usage would cost at the overage price. A credit step is
+attributed to the model of the last call before it.
 
 ## What it reads
 

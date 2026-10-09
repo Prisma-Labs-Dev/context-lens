@@ -37,6 +37,11 @@ public struct ModelPrice: Codable, Sendable, Hashable {
 public enum Pricing {
     public static let source = "https://platform.claude.com/docs/en/about-claude/pricing"
     public static let readOn = "2026-10-09"
+    /// Copilot bills in AI credits; GitHub prices one at $0.01 for paid usage beyond the included
+    /// allotment. The dollar figure is an estimate of what the credits would cost, not a bill.
+    public static let copilotCredit = 0.01
+    public static let copilotSource = "https://docs.github.com/copilot/concepts/billing/usage-based-billing-for-organizations-and-enterprises"
+    public static let copilotReadOn = "2026-10-09"
     /// USD per web search request.
     public static let webSearch = 0.01
 

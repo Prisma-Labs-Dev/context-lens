@@ -127,6 +127,44 @@ public struct ModelCost: Codable, Sendable, Identifiable, Hashable {
     public var price: ModelPrice?
 }
 
+/// A way to slice spend. Slices combine: model x harness x route.
+public enum CostDimension: String, Codable, Sendable, CaseIterable, Identifiable {
+    case model, harness, route
+    public var id: String { rawValue }
+    public var label: String { rawValue.capitalized }
+
+    /// Parses `model,harness,route`; nil when a name is unknown.
+    public static func parse(_ s: String) -> [CostDimension]? {
+        let parts = s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+        let dims = parts.compactMap(CostDimension.init(rawValue:))
+        return dims.isEmpty || dims.count != parts.count ? nil : dims
+    }
+}
+
+/// Spend for one model, harness and route: the finest slice, which every other slice sums.
+public struct CostCell: Codable, Sendable, Hashable {
+    public var model: String
+    public var harness: String
+    public var route: String
+    public var totals = TokenTotals()
+    /// Copilot AI credits.
+    public var credits = 0.0
+
+    public func value(_ d: CostDimension) -> String {
+        switch d { case .model: model; case .harness: harness; case .route: route }
+    }
+}
+
+/// Spend grouped by one or more dimensions. Every dollar here is an estimate: list price for
+/// Claude calls, `Pricing.copilotCredit` per Copilot credit.
+public struct CostSlice: Codable, Sendable, Hashable, Identifiable {
+    public var id: String { keys.joined(separator: " · ") }
+    public var keys: [String]
+    public var totals = TokenTotals()
+    public var credits = 0.0
+    public var usd: Double { totals.cost + credits * Pricing.copilotCredit }
+}
+
 /// A finding with the money attached, largest first.
 public struct CostHint: Codable, Sendable, Identifiable, Hashable {
     public var id: String
@@ -178,11 +216,38 @@ public struct CostReport: Codable, Sendable {
     public var pricesReadOn = Pricing.readOn
     /// Calls seen in two transcripts (a resumed or forked session) and counted once.
     public var duplicateCalls = 0
+    /// Spend per model, harness and route; `slices(by:)` groups it.
+    public var cells: [CostCell] = []
+    /// List-price estimate per route ID, to set against what the gateway billed.
+    public var routeEstimates: [String: Double] = [:]
+    /// Copilot credits at `Pricing.copilotCredit`: an estimate.
+    public var copilotUSD: Double { copilotCredits * Pricing.copilotCredit }
+
+    /// Spend grouped by the given dimensions, largest first.
+    public func slices(by dims: [CostDimension]) -> [CostSlice] {
+        var out: [[String]: CostSlice] = [:]
+        for c in cells {
+            let keys = dims.map(c.value)
+            var s = out[keys] ?? CostSlice(keys: keys)
+            s.totals.add(c.totals)
+            s.credits += c.credits
+            out[keys] = s
+        }
+        return out.values.sorted { ($0.usd, $1.id) > ($1.usd, $0.id) }
+    }
 }
 
 public enum CostReportBuilder {
-    public static func build(files: [CostFileScan], since: Date?, until: Date = Date(), config: CostConfig = CostConfig()) -> CostReport {
+    public static func build(files: [CostFileScan], since: Date?, until: Date = Date(), config: CostConfig = CostConfig(),
+                             auth: AuthWindows = AuthWindows()) -> CostReport {
         var report = CostReport(since: since, until: until)
+        struct CellKey: Hashable { var model: String, harness: String, route: CostRoute }
+        var cells: [CellKey: CostCell] = [:]
+        func cell(_ k: CellKey, _ update: (inout CostCell) -> Void) {
+            var c = cells[k] ?? CostCell(model: k.model, harness: k.harness, route: k.route.label)
+            update(&c)
+            cells[k] = c
+        }
         func inWindow(_ d: Date) -> Bool { (since.map { d >= $0 } ?? true) && d <= until }
 
         // A call copied into a resumed or forked transcript counts once, in its own transcript.
@@ -207,6 +272,12 @@ public enum CostReportBuilder {
                 let steps = f.creditSteps.filter { inWindow($0.time) }
                 guard !steps.isEmpty else { continue }
                 let credits = steps.reduce(0) { $0 + $1.credits }
+                for step in steps {
+                    // Copilot writes Claude IDs with dots (`claude-opus-5.5`); the model slice uses Anthropic's.
+                    var model = Pricing.normalize(step.model ?? f.copilotModel ?? "copilot")
+                    if model.hasPrefix("claude-") { model = model.replacingOccurrences(of: ".", with: "-") }
+                    cell(CellKey(model: model, harness: CostKind.copilot.harness, route: .copilot)) { $0.credits += step.credits }
+                }
                 let times = steps.map(\.time) + f.calls.map(\.time).filter(inWindow)
                 var s = SessionCost(id: f.session, title: f.title ?? "Copilot session", group: CostKind.copilot.label, kind: .copilot,
                                     cwd: f.cwd, file: f.file, first: times.min()!, last: times.max()!, models: f.copilotModel.map { [$0] } ?? [])
@@ -232,9 +303,14 @@ public enum CostReportBuilder {
                 kind: parent?.kind ?? .terminal, cwd: parent?.cwd ?? f.cwd, file: parent?.file ?? f.file,
                 first: calls[0].time, last: calls[0].time, models: [])
             let group = f.kind == .subagent ? CostKind.subagent.label : s.group
+            // A subagent draws from the same install as its parent.
+            let entrypoint = f.entrypoint ?? parent?.entrypoint
             var totals = TokenTotals()
             for c in calls {
                 totals.add(c)
+                let route = auth.route(at: c.time, kind: f.kind, entrypoint: entrypoint)
+                cell(CellKey(model: Pricing.normalize(c.model), harness: f.kind.harness, route: route)) { $0.totals.add(c) }
+                report.routeEstimates[route.id, default: 0] += c.cost ?? 0
                 s.first = min(s.first, c.time); s.last = max(s.last, c.time)
                 if !s.models.contains(c.model) { s.models.append(c.model) }
                 s.peakContext = max(s.peakContext, c.context)
@@ -285,6 +361,8 @@ public enum CostReportBuilder {
             g.credits = report.copilotCredits
             groups[g.name] = g
         }
+        report.cells = cells.values.sorted { ($0.totals.cost + $0.credits * Pricing.copilotCredit) > ($1.totals.cost + $1.credits * Pricing.copilotCredit) }
+        report.routeEstimates[CostRoute.copilot.id] = report.copilotCredits > 0 ? report.copilotUSD : nil
         report.sessions = sessions.values.sorted { $0.total > $1.total }
         report.copilot.sort { ($0.credits ?? 0) > ($1.credits ?? 0) }
         report.groups = groups.values.sorted { ($0.totals.cost, $0.credits) > ($1.totals.cost, $1.credits) }

@@ -69,6 +69,18 @@ public enum CostKind: String, Codable, Sendable, CaseIterable {
         case .copilot: "Copilot CLI"
         }
     }
+
+    /// The harness that made the calls, for the harness slice.
+    public var harness: String {
+        switch self {
+        case .subagent: "Subagents"
+        case .headless: "Headless (claude -p)"
+        case .background: "Background (claude --bg)"
+        case .desktop: "Desktop Code tab"
+        case .terminal: "Claude Code CLI"
+        case .copilot: "Copilot CLI"
+        }
+    }
 }
 
 /// The cost-relevant facts of one transcript.
@@ -94,6 +106,8 @@ public struct CostFileScan: Codable, Sendable {
     public struct CreditStep: Codable, Sendable, Hashable {
         public var time: Date
         public var credits: Double
+        /// The model of the last call before the checkpoint.
+        public var model: String?
     }
 }
 
@@ -104,7 +118,7 @@ public struct CostScanner: Sendable {
     public var env: HarnessEnvironment
     public var cacheFile: URL
     public var copilotHome: URL
-    static let cacheVersion = 2
+    static let cacheVersion = 3
 
     public init(env: HarnessEnvironment = .current, cacheFile: URL? = nil, copilotHome: URL? = nil) {
         self.env = env
@@ -309,6 +323,7 @@ struct CopilotCostParser {
         let session = file.deletingLastPathComponent().lastPathComponent
         var out = CostFileScan(file: file.path, session: "copilot:" + session, kind: .copilot, modified: modified)
         var spent = 0.0
+        var lastModel: String?
         scanner.forEach { line in
             let time = LineScanner.timestamp(line) ?? modified
             if LineScanner.has(line, "\"session.start\""), let obj = LineScanner.json(line), let d = obj["data"] as? [String: Any] {
@@ -318,6 +333,7 @@ struct CopilotCostParser {
                       let u = (obj["data"] as? [String: Any])?["usage"] as? [String: Any] {
                 let model = u["model"] as? String ?? out.copilotModel ?? "copilot"
                 if out.copilotModel == nil { out.copilotModel = model }
+                lastModel = model
                 out.calls.append(CostCall(
                     id: "\(out.session):\(out.calls.count)", time: time, model: model,
                     input: ClaudeCostParser.int(u["inputTokens"]), cacheWrite5m: ClaudeCostParser.int(u["cacheWriteTokens"]),
@@ -327,7 +343,7 @@ struct CopilotCostParser {
                 let value = d["totalNanoAiu"] ?? (d["accountingSnapshot"] as? [String: Any])?["totalNanoAiu"]
                 // The total is cumulative; a step is what it grew by since the last checkpoint.
                 if let n = (value as? NSNumber)?.doubleValue, n / 1e9 > spent {
-                    out.creditSteps.append(.init(time: time, credits: n / 1e9 - spent))
+                    out.creditSteps.append(.init(time: time, credits: n / 1e9 - spent, model: lastModel ?? out.copilotModel))
                     spent = n / 1e9
                 }
             } else if out.title == nil, LineScanner.has(line, "\"user.message\""), let obj = LineScanner.json(line),

@@ -24,6 +24,13 @@ final class CostsModel {
     var group: String?
     var report: CostReport?
     var loading = false
+    /// How the Slices section groups spend, in this order.
+    var dims: [CostDimension] = [.route]
+    /// What each route's gateway billed this month, next to the list-price estimate.
+    var gateway: [GatewayUsage] = []
+    var gatewayLoading = false
+    /// Installs set up for a route the auth windows do not have yet.
+    var drift: [String] = []
     private var generation = 0
 
     func load() {
@@ -32,13 +39,40 @@ final class CostsModel {
         loading = true
         Task.detached {
             let files = CostScanner().scan(since: since)
-            let report = CostReportBuilder.build(files: files, since: since, config: CostConfig.load())
+            let auth = AuthWindows.load()
+            let drift = auth.drift()
+            let report = CostReportBuilder.build(files: files, since: since, config: CostConfig.load(), auth: auth)
             await MainActor.run {
                 guard generation == self.generation else { return }
                 self.report = report
+                self.drift = drift
                 self.loading = false
                 if let g = self.group, !report.groups.contains(where: { $0.name == g }) { self.group = nil }
             }
+        }
+    }
+
+    /// Asks the usage API for each route with auth in `~/.context-lens/auth-windows.json`.
+    func loadGateway() {
+        guard !gatewayLoading else { return }
+        gatewayLoading = true
+        Task.detached {
+            let auth = AuthWindows.load()
+            let start = GatewayClient.monthStart()
+            let month = CostReportBuilder.build(files: CostScanner().scan(since: start), since: start, auth: auth)
+            let usage = GatewayClient.fetch(auth, estimates: month.routeEstimates)
+            await MainActor.run {
+                self.gateway = usage
+                self.gatewayLoading = false
+            }
+        }
+    }
+
+    func toggle(_ d: CostDimension) {
+        if let i = dims.firstIndex(of: d) {
+            if dims.count > 1 { dims.remove(at: i) }
+        } else {
+            dims.append(d)
         }
     }
 
@@ -64,6 +98,8 @@ struct CostsView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 0) {
                             GroupsSection(report: r)
+                            SlicesSection(report: r)
+                            BudgetsSection()
                             ModelsSection(report: r)
                             DriversSection(report: r)
                         }
@@ -82,7 +118,7 @@ struct CostsView: View {
         .environment(model)
         .foregroundStyle(Theme.ink)
         .tint(Theme.claude)
-        .onAppear { model.load() }
+        .onAppear { model.load(); model.loadGateway() }
     }
 }
 
@@ -98,18 +134,18 @@ struct CostsHeader: View {
             }
             .labelsHidden().pickerStyle(.segmented).fixedSize()
             if let r = model.report {
-                Text(Fmt.usd(r.totals.cost)).font(.system(size: 15, weight: .semibold)).monospacedDigit()
+                Text("est. " + Fmt.usd(r.totals.cost)).font(.system(size: 15, weight: .semibold)).monospacedDigit()
                 Text("\(r.totals.calls) calls · cache hit \(Fmt.pct(r.totals.hitRatio))")
                     .font(Theme.small).foregroundStyle(Theme.ink2)
                 if r.copilotCredits > 0 {
-                    Text("· Copilot \(String(format: "%.0f", r.copilotCredits)) credits").font(Theme.small).foregroundStyle(Theme.ink2)
+                    Text("· Copilot \(String(format: "%.0f", r.copilotCredits)) credits (est. \(Fmt.usd(r.copilotUSD)))").font(Theme.small).foregroundStyle(Theme.ink2)
                 }
             }
             Spacer(minLength: 6)
             Text("List price").font(Theme.small).foregroundStyle(Theme.ink3)
                 .help("Anthropic list prices from \(Pricing.source), read \(Pricing.readOn). A gateway may bill differently.")
             if model.loading { ProgressView().controlSize(.small) }
-            IconButton(systemImage: "arrow.clockwise", help: "Rescan changed transcripts") { model.load() }
+            IconButton(systemImage: "arrow.clockwise", help: "Rescan changed transcripts and ask the gateway again") { model.load(); model.loadGateway() }
         }
         .padding(.horizontal, 14)
         .frame(height: 38)
@@ -121,7 +157,7 @@ struct GroupsSection: View {
     var report: CostReport
 
     var body: some View {
-        ListSection(title: "Groups", trailing: model.group == nil ? "click to filter" : "showing \(model.group!)") {
+        ListSection(title: "Groups", trailing: "est. · " + (model.group == nil ? "click to filter" : "showing \(model.group!)")) {
             let top = max(report.groups.map(\.totals.cost).max() ?? 0, 0.01)
             ForEach(report.groups) { g in
                 let selected = model.group == g.name
@@ -149,6 +185,97 @@ struct GroupsSection: View {
                 .onTapGesture { model.group = selected ? nil : g.name }
             }
             SplitBar(split: report.split).padding(.horizontal, 14).padding(.top, 8)
+        }
+    }
+}
+
+/// Spend by any combination of model, harness and route; the same as `context-lens cost --by`.
+struct SlicesSection: View {
+    @Environment(CostsModel.self) private var model
+    var report: CostReport
+
+    var body: some View {
+        let slices = report.slices(by: model.dims)
+        ListSection(title: "Slices", trailing: "est.") {
+            HStack(spacing: 4) {
+                Text("by").font(Theme.small).foregroundStyle(Theme.ink3)
+                ForEach(CostDimension.allCases) { d in
+                    let on = model.dims.contains(d)
+                    Button { model.toggle(d) } label: {
+                        Text(on && model.dims.count > 1 ? "\(model.dims.firstIndex(of: d)! + 1) \(d.label)" : d.label)
+                            .font(Theme.small)
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(on ? Theme.selection : .clear))
+                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.hairline))
+                    }
+                    .buttonStyle(.plain)
+                    .help(on ? "Stop slicing by \(d.rawValue)" : "Also slice by \(d.rawValue)")
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 14).padding(.bottom, 4)
+            let top = max(slices.map(\.usd).max() ?? 0, 0.01)
+            ForEach(slices) { s in
+                HStack(spacing: 8) {
+                    Text(s.keys.joined(separator: " · ")).lineLimit(1).truncationMode(.middle).frame(width: 230, alignment: .leading)
+                        .help(s.keys.joined(separator: "\n"))
+                    Text(Fmt.usd(s.usd)).font(Theme.monoSmall).monospacedDigit().frame(width: 66, alignment: .trailing)
+                    GeometryReader { geo in
+                        RoundedRectangle(cornerRadius: 2).fill(Theme.claude.opacity(0.75))
+                            .frame(width: max(2, geo.size.width * s.usd / top), height: 8)
+                            .frame(maxHeight: .infinity)
+                    }
+                    Text(s.credits > 0 ? String(format: "%.0f cr", s.credits) : "\(s.totals.calls)")
+                        .font(Theme.small).foregroundStyle(Theme.ink3).frame(width: 52, alignment: .trailing)
+                        .help(s.credits > 0 ? "Copilot AI credits, at $\(Pricing.copilotCredit) each" : "calls")
+                }
+                .font(.system(size: 12))
+                .padding(.horizontal, 14)
+                .frame(height: 22)
+            }
+            if model.dims.contains(.route), report.routeEstimates[CostRoute.unknown.id] ?? 0 > 0 {
+                Text("Unknown route: calls no window in ~/.context-lens/auth-windows.json covers.")
+                    .font(Theme.small).foregroundStyle(Theme.ink3).padding(.horizontal, 14).padding(.top, 4)
+            }
+        }
+    }
+}
+
+/// What each budget's gateway billed this month, from its usage API, next to the list-price
+/// estimate of the calls attributed to it.
+struct BudgetsSection: View {
+    @Environment(CostsModel.self) private var model
+
+    var body: some View {
+        if !model.gateway.isEmpty || model.gatewayLoading || !model.drift.isEmpty {
+            ListSection(title: "Budgets", trailing: model.gateway.first.map { "gateway, \($0.month)" } ?? (model.gatewayLoading ? "asking the gateway…" : nil)) {
+                Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 4) {
+                    GridRow {
+                        Text("route").gridColumnAlignment(.leading)
+                        Text("billed"); Text("limit"); Text("left"); Text("est. list"); Text("gateway/list")
+                    }
+                    .font(Theme.small).foregroundStyle(Theme.ink3)
+                    ForEach(model.gateway) { g in
+                        GridRow {
+                            Text(g.label).lineLimit(1).help(g.subscription.map { "\($0)\(g.tier.map { ", " + $0 } ?? "")" } ?? "")
+                            if let e = g.error {
+                                Text(e).foregroundStyle(Theme.stale).lineLimit(1).gridCellColumns(5).frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                Text(g.billed.map(Fmt.usd) ?? "?")
+                                Text(g.limit.map(Fmt.usd) ?? "")
+                                Text(g.remaining.map(Fmt.usd) ?? "").foregroundStyle(g.remaining == 0 ? Theme.stale : Theme.ink)
+                                Text(Fmt.usd(g.estimate))
+                                Text(g.ratio.map { String(format: "%.2f", $0) } ?? "")
+                            }
+                        }
+                        .font(Theme.monoSmall).monospacedDigit()
+                    }
+                }
+                .padding(.horizontal, 14)
+                ForEach(model.drift, id: \.self) { d in
+                    Text(d).font(Theme.small).foregroundStyle(Theme.stale).padding(.horizontal, 14).padding(.top, 4)
+                }
+            }
         }
     }
 }
@@ -188,11 +315,11 @@ struct ModelsSection: View {
     var report: CostReport
 
     var body: some View {
-        ListSection(title: "Models", trailing: "tokens") {
+        ListSection(title: "Models", trailing: "tokens · est. cost") {
             Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 4) {
                 GridRow {
                     Text("model").gridColumnAlignment(.leading)
-                    Text("cost"); Text("input"); Text("output"); Text("thinking"); Text("write 5m"); Text("write 1h"); Text("read"); Text("hit")
+                    Text("est. cost"); Text("input"); Text("output"); Text("thinking"); Text("write 5m"); Text("write 1h"); Text("read"); Text("hit")
                 }
                 .font(Theme.small).foregroundStyle(Theme.ink3)
                 ForEach(report.models) { m in
@@ -243,7 +370,7 @@ struct SessionsTable: View {
             }
             .width(min: 180, ideal: 300)
             TableColumn("Group") { s in Text(s.group).foregroundStyle(Theme.ink2).lineLimit(1) }.width(min: 80, ideal: 120)
-            TableColumn("Total") { s in
+            TableColumn("est. Total") { s in
                 Text(s.credits.map { String(format: "%.1f cr", $0) } ?? Fmt.usd(s.total)).monospacedDigit()
             }
             .width(70)

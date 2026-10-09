@@ -153,3 +153,112 @@ struct CostFixture {
         #expect(abs(row.error) < 0.002)
     }
 }
+
+@Suite struct CostRouteTests {
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    var auth: AuthWindows {
+        AuthWindows(routes: [CostRoute(id: "a", label: "Route A"), CostRoute(id: "b", label: "Route B")], windows: [
+            AuthWindow(start: t0 + 100, scope: .desktop, route: "b"),
+            AuthWindow(start: t0, scope: .all, route: "a"),
+        ])
+    }
+
+    @Test func attributesByTimeAndScope() {
+        let w = auth
+        #expect(w.route(at: t0 - 1, kind: .terminal, entrypoint: "cli") == .unknown)
+        #expect(w.route(at: t0, kind: .terminal, entrypoint: "cli").id == "a")
+        #expect(w.route(at: t0 + 99, kind: .desktop, entrypoint: "claude-desktop-3p").id == "a")
+        // A window starts at its own time, and only for its scope.
+        #expect(w.route(at: t0 + 100, kind: .desktop, entrypoint: "claude-desktop-3p").id == "b")
+        #expect(w.route(at: t0 + 100, kind: .headless, entrypoint: "sdk-cli").id == "a")
+        // Subagents carry their parent's entrypoint.
+        #expect(w.route(at: t0 + 200, kind: .subagent, entrypoint: "claude-desktop-3p").id == "b")
+        // The desktop app on claude.ai and Copilot need no window.
+        #expect(w.route(at: t0 + 200, kind: .desktop, entrypoint: "claude-desktop") == .claudeAI)
+        #expect(w.route(at: t0 + 200, kind: .copilot, entrypoint: nil) == .copilot)
+    }
+
+    @Test func loadsWindowsWithOffsets() throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        try f.write(".context-lens/auth-windows.json", #"""
+        {"usageURL": "https://gateway.example/usage/anthropic/",
+         "routes": [{"id": "team", "label": "Team key", "auth": {"kind": "apiKey", "header": "api-key", "keyFile": "~/k"}}],
+         "windows": [{"start": "2026-10-01T10:20:00+02:00", "scope": "cli", "route": "team"},
+                     {"start": "2026-09-01T00:00:00Z", "scope": "all", "route": "entra"}]}
+        """#, base: f.home)
+        let w = AuthWindows.load(env: f.env)
+        #expect(w.windows.map(\.route) == ["entra", "team"])
+        #expect(w.windows[1].start == ISO8601DateFormatter().date(from: "2026-10-01T08:20:00Z"))
+        #expect(w.route(id: "team").auth?.keyFile == "~/k")
+        // A route ID no route defines still reads.
+        #expect(w.route(at: w.windows[0].start, kind: .terminal, entrypoint: "cli").label == "entra")
+    }
+
+    @Test func parsesDimensions() {
+        #expect(CostDimension.parse("model, harness") == [.model, .harness])
+        #expect(CostDimension.parse("route") == [.route])
+        #expect(CostDimension.parse("model,team") == nil)
+    }
+
+    @Test func slicesByModelHarnessAndRoute() throws {
+        let x = try CostFixture()
+        defer { x.f.cleanup() }
+        let w = AuthWindows(routes: [CostRoute(id: "a", label: "Route A"), CostRoute(id: "b", label: "Route B")], windows: [
+            AuthWindow(start: x.t0 - 10, scope: .all, route: "a"),
+            AuthWindow(start: x.t0 + 100, scope: .desktop, route: "b"),
+        ])
+        let r = CostReportBuilder.build(files: x.scanner.scan(), since: Date().addingTimeInterval(-7 * 86_400), auth: w)
+
+        let routes = Dictionary(uniqueKeysWithValues: r.slices(by: [.route]).map { ($0.keys[0], $0) })
+        // m1 and m2 before the desktop switch, the job's calls on the CLI; m3 and the subagent after it.
+        #expect(abs(routes["Route A"]!.usd - (0.25204 + 0.01902 + 0.012)) < 1e-9)
+        #expect(routes["Route A"]!.totals.calls == 4)
+        #expect(abs(routes["Route B"]!.usd - (0.25752 + 0.052)) < 1e-9)
+        #expect(routes["Copilot seat"]!.credits == 4.0)
+        #expect(abs(routes["Copilot seat"]!.usd - 0.04) < 1e-9)
+        #expect(abs(r.routeEstimates["a"]! - 0.28306) < 1e-9)
+
+        let pairs = r.slices(by: [.model, .harness])
+        #expect(pairs.contains { $0.keys == ["claude-opus-5-5", "Subagents"] && abs($0.usd - 0.052) < 1e-9 })
+        #expect(pairs.contains { $0.keys == ["gpt-6.1-sol", "Copilot CLI"] && $0.credits == 2.5 })
+        #expect(pairs.contains { $0.keys == ["copilot", "Copilot CLI"] && $0.credits == 1.5 })
+        // Every slicing sums to the same total.
+        let all = r.totals.cost + r.copilotUSD
+        for dims in [[CostDimension.model], [.harness], [.route], [.model, .harness, .route]] {
+            #expect(abs(r.slices(by: dims).reduce(0) { $0 + $1.usd } - all) < 1e-9)
+        }
+    }
+
+    @Test func noWindowsMeansUnknownRoute() throws {
+        let x = try CostFixture()
+        defer { x.f.cleanup() }
+        let r = CostReportBuilder.build(files: x.scanner.scan(), since: nil)
+        #expect(Set(r.slices(by: [.route]).map { $0.keys[0] }) == ["Unknown route", "Copilot seat"])
+    }
+
+    @Test func readsTheConfiguredRouteByKeyHash() throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        try f.write("keys/team", "synthetic-key-1\n", base: f.root)
+        try f.write(".claude/settings.json", #"{"apiKeyHelper": "echo dummy", "env": {"ANTHROPIC_CUSTOM_HEADERS": "api-key: synthetic-key-1"}}"#, base: f.home)
+        let lib = "Library/Application Support/Claude-3p/configLibrary"
+        try f.write("\(lib)/_meta.json", #"{"appliedId": "p1"}"#, base: f.home)
+        try f.write("\(lib)/p1.json", #"{"inferenceCredentialHelper": "/usr/local/bin/az", "inferenceCredentialHelperArgs": ["account", "get-access-token"]}"#, base: f.home)
+        let w = AuthWindows(routes: [
+            CostRoute(id: "entra", label: "Entra", auth: RouteAuth(kind: .entra, resource: "api://x", tenant: "t")),
+            CostRoute(id: "team", label: "Team key", auth: RouteAuth(kind: .apiKey, keyFile: f.root.appending(path: "keys/team").path)),
+        ], windows: [AuthWindow(start: .distantPast, scope: .all, route: "entra")])
+        #expect(w.configuredNow(env: f.env) == [.cli: "team", .desktop: "entra"])
+        #expect(w.drift(env: f.env) == ["cli is set up for Team key, but auth-windows.json has Entra now"])
+    }
+
+    @Test func gatewayRatio() {
+        var g = GatewayUsage(route: "a", label: "A", month: "2026-10", billed: 105, limit: 700, estimate: 100)
+        #expect(g.remaining == 595 && abs(g.ratio! - 1.05) < 1e-9)
+        g.estimate = 0
+        #expect(g.ratio == nil)
+        #expect(GatewayClient.fetch(AuthWindows(), estimates: [:]).isEmpty)
+    }
+}
