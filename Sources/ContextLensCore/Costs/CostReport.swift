@@ -204,13 +204,15 @@ public enum CostReportBuilder {
 
         for f in files {
             if f.kind == .copilot {
-                guard let credits = f.credits, let t = f.calls.first?.time, inWindow(t) else { continue }
+                let steps = f.creditSteps.filter { inWindow($0.time) }
+                guard !steps.isEmpty else { continue }
+                let credits = steps.reduce(0) { $0 + $1.credits }
+                let times = steps.map(\.time) + f.calls.map(\.time).filter(inWindow)
                 var s = SessionCost(id: f.session, title: f.title ?? "Copilot session", group: CostKind.copilot.label, kind: .copilot,
-                                    cwd: f.cwd, file: f.file, first: t, last: t, models: f.copilotModel.map { [$0] } ?? [])
+                                    cwd: f.cwd, file: f.file, first: times.min()!, last: times.max()!, models: f.copilotModel.map { [$0] } ?? [])
                 s.credits = credits
-                if let k = f.copilotTokens {
-                    s.own.calls = 1; s.own.input = k.input; s.own.cacheRead = k.cacheRead; s.own.cacheWrite5m = k.cacheWrite; s.own.output = k.output
-                }
+                // Tokens only: the price table has no Copilot models, so these add no dollars.
+                for c in f.calls where inWindow(c.time) { s.own.add(c) }
                 report.copilot.append(s)
                 report.copilotCredits += credits
                 continue
@@ -248,7 +250,8 @@ public enum CostReportBuilder {
                 }
                 models[m.model] = m
                 if let p = price, let cold = coldRestart(c) {
-                    let writePrice = c.cacheWrite1h > c.cacheWrite5m ? p.cacheWrite1h : p.cacheWrite5m
+                    let written = max(c.cacheWrite, 1)
+                    let writePrice = (Double(c.cacheWrite5m) * p.cacheWrite5m + Double(c.cacheWrite1h) * p.cacheWrite1h) / Double(written)
                     let extra = Double(cold) * (writePrice - p.cacheRead) / 1e6
                     s.coldRestarts += 1; s.coldExtra += extra
                     if c.gap! <= 3600 {
@@ -375,7 +378,7 @@ public struct CostReconciliation: Codable, Sendable {
         let subagents = Dictionary(grouping: files.filter { $0.kind == .subagent }, by: \.session)
         for f in files where f.kind != .subagent && f.kind != .copilot {
             guard let reported = f.reportedCost, reported > 0, f.calls.contains(where: { c in since.map { c.time >= $0 } ?? true }) else { continue }
-            let all = f.calls + (subagents[f.session] ?? []).flatMap(\.calls)
+            let all = f.calls.filter { !$0.copied } + (subagents[f.session] ?? []).flatMap(\.calls)
             let computed = all.reduce(0) { $0 + ($1.cost ?? 0) }
             out.rows.append(Row(session: f.session, title: f.title ?? "Untitled", computed: computed, reported: reported))
         }

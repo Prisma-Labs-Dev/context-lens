@@ -69,6 +69,11 @@ struct CostFixture {
             #"{"type":"user.message","data":{"content":"Review the change"},"timestamp":"\#(iso(t0))"}"#,
             #"{"type":"session.usage_record","data":{"usage":{"model":"gpt-6.1-sol","inputTokens":100,"outputTokens":10,"cacheReadTokens":50,"cacheWriteTokens":5}},"timestamp":"\#(iso(t0))"}"#,
             #"{"type":"session.usage_checkpoint","data":{"totalNanoAiu":2500000000},"timestamp":"\#(iso(t0 + 5))"}"#,
+            // Spent the day before: outside a window that starts later.
+        ].joined(separator: "\n"), base: f.home)
+        try f.write(".copilot/session-state/c0/events.jsonl", [
+            #"{"type":"session.usage_checkpoint","data":{"totalNanoAiu":1000000000},"timestamp":"\#(iso(t0 - 86_400))"}"#,
+            #"{"type":"session.usage_checkpoint","data":{"totalNanoAiu":1500000000},"timestamp":"\#(iso(t0 + 10))"}"#,
         ].joined(separator: "\n"), base: f.home)
     }
 
@@ -100,7 +105,7 @@ struct CostFixture {
         let sub = try #require(files.first { $0.kind == .subagent })
         #expect(sub.session == lead.session && sub.agentType == "Explore")
         #expect(files.first { $0.kind == .background }?.calls.first { $0.id == "m1" }?.copied == true)
-        #expect(files.first { $0.kind == .copilot }?.credits == 2.5)
+        #expect(files.first { $0.session == "copilot:c1" }?.creditSteps.map(\.credits) == [2.5])
         // A second scan reads the cache.
         #expect(x.scanner.scan().count == files.count)
     }
@@ -125,7 +130,9 @@ struct CostFixture {
         #expect(abs(job.own.cost - (1000 * 2.0 + 1000 * 10.0) / 1e6) < 1e-9)
 
         #expect(Set(r.groups.map(\.name)) == ["Leads", "Subagents", "Background jobs", "Copilot CLI"])
-        #expect(r.copilotCredits == 2.5)
+        #expect(r.copilotCredits == 4.0)
+        let recent = CostReportBuilder.build(files: x.scanner.scan(), since: x.t0 - 3600, config: config)
+        #expect(recent.copilotCredits == 3.0)
         #expect(abs(r.totals.cost - r.groups.reduce(0) { $0 + $1.totals.cost }) < 1e-9)
         #expect(r.models.first?.model == "claude-opus-5-5")
 

@@ -86,13 +86,14 @@ public struct CostFileScan: Codable, Sendable {
     public var calls: [CostCall] = []
     /// Claude Code's own running total (`cost-state` lines): the last value seen, in USD.
     public var reportedCost: Double?
-    /// Copilot: AI credits used, from the last usage checkpoint.
-    public var credits: Double?
+    /// Copilot: AI credits spent between successive usage checkpoints, so a period counts only
+    /// what was spent in it. Its calls carry tokens only.
+    public var creditSteps: [CreditStep] = []
     public var copilotModel: String?
-    public var copilotTokens: CopilotTokens?
 
-    public struct CopilotTokens: Codable, Sendable, Hashable {
-        public var input = 0, cacheRead = 0, cacheWrite = 0, output = 0
+    public struct CreditStep: Codable, Sendable, Hashable {
+        public var time: Date
+        public var credits: Double
     }
 }
 
@@ -103,7 +104,7 @@ public struct CostScanner: Sendable {
     public var env: HarnessEnvironment
     public var cacheFile: URL
     public var copilotHome: URL
-    static let cacheVersion = 1
+    static let cacheVersion = 2
 
     public init(env: HarnessEnvironment = .current, cacheFile: URL? = nil, copilotHome: URL? = nil) {
         self.env = env
@@ -297,8 +298,8 @@ struct ClaudeCostParser {
     static func int(_ v: Any?) -> Int { (v as? NSNumber)?.intValue ?? 0 }
 }
 
-/// Copilot CLI `session-state/<id>/events.jsonl`: credits from the last usage checkpoint
-/// (`totalNanoAiu` / 1e9 is the "AI Credits" figure the CLI prints) and tokens from usage records.
+/// Copilot CLI `session-state/<id>/events.jsonl`: `totalNanoAiu` / 1e9 in a usage checkpoint is
+/// the running "AI Credits" figure the CLI prints at exit; tokens come from usage records.
 struct CopilotCostParser {
     let file: URL
     let modified: Date
@@ -307,35 +308,34 @@ struct CopilotCostParser {
         guard let scanner = LineScanner(file) else { return nil }
         let session = file.deletingLastPathComponent().lastPathComponent
         var out = CostFileScan(file: file.path, session: "copilot:" + session, kind: .copilot, modified: modified)
-        var tokens = CostFileScan.CopilotTokens()
-        var nano: Double?
-        var last: Date?
+        var spent = 0.0
         scanner.forEach { line in
-            if let t = LineScanner.timestamp(line) { last = t }
+            let time = LineScanner.timestamp(line) ?? modified
             if LineScanner.has(line, "\"session.start\""), let obj = LineScanner.json(line), let d = obj["data"] as? [String: Any] {
                 out.copilotModel = d["selectedModel"] as? String
                 if let c = (d["context"] as? [String: Any])?["cwd"] as? String { out.cwd = c }
             } else if LineScanner.has(line, "\"session.usage_record\""), let obj = LineScanner.json(line),
                       let u = (obj["data"] as? [String: Any])?["usage"] as? [String: Any] {
-                tokens.input += ClaudeCostParser.int(u["inputTokens"])
-                tokens.cacheRead += ClaudeCostParser.int(u["cacheReadTokens"])
-                tokens.cacheWrite += ClaudeCostParser.int(u["cacheWriteTokens"])
-                tokens.output += ClaudeCostParser.int(u["outputTokens"])
-                if out.copilotModel == nil { out.copilotModel = u["model"] as? String }
+                let model = u["model"] as? String ?? out.copilotModel ?? "copilot"
+                if out.copilotModel == nil { out.copilotModel = model }
+                out.calls.append(CostCall(
+                    id: "\(out.session):\(out.calls.count)", time: time, model: model,
+                    input: ClaudeCostParser.int(u["inputTokens"]), cacheWrite5m: ClaudeCostParser.int(u["cacheWriteTokens"]),
+                    cacheRead: ClaudeCostParser.int(u["cacheReadTokens"]), output: ClaudeCostParser.int(u["outputTokens"]),
+                    thinking: ClaudeCostParser.int(u["reasoningTokens"])))
             } else if LineScanner.has(line, "\"totalNanoAiu\""), let obj = LineScanner.json(line), let d = obj["data"] as? [String: Any] {
                 let value = d["totalNanoAiu"] ?? (d["accountingSnapshot"] as? [String: Any])?["totalNanoAiu"]
-                if let n = (value as? NSNumber)?.doubleValue { nano = n }
+                // The total is cumulative; a step is what it grew by since the last checkpoint.
+                if let n = (value as? NSNumber)?.doubleValue, n / 1e9 > spent {
+                    out.creditSteps.append(.init(time: time, credits: n / 1e9 - spent))
+                    spent = n / 1e9
+                }
             } else if out.title == nil, LineScanner.has(line, "\"user.message\""), let obj = LineScanner.json(line),
                       let text = (obj["data"] as? [String: Any])?["content"] as? String {
                 out.title = String(text.split(separator: "\n").first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }?.prefix(80) ?? "")
             }
             return true
         }
-        guard let nano else { return nil }
-        out.credits = nano / 1e9
-        out.copilotTokens = tokens
-        // One pseudo-call carries the time, so the period filter treats Copilot like the rest.
-        out.calls = [CostCall(id: out.session, time: last ?? modified, model: out.copilotModel ?? "copilot")]
-        return out
+        return out.creditSteps.isEmpty ? nil : out
     }
 }

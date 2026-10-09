@@ -28,7 +28,7 @@ func runCost(_ opts: Options) {
     }
     let report = CostReportBuilder.build(files: files, since: since, until: until, config: CostConfig.load())
     if opts.flags["brief"] != nil {
-        print(CostBrief.text(report, window: window, top: Int(opts.flags["top"] ?? "5") ?? 5))
+        print(CostBrief.text(report, window: window, top: max(0, Int(opts.flags["top"] ?? "5") ?? 5)))
     } else {
         emit(report)
     }
