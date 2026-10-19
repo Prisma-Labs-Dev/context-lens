@@ -83,7 +83,7 @@ shapes (`sk-`, `ghp_`, `xox*`, `AKIA`, …), JWTs, private keys, `Bearer …`, `
 `"password": …` pairs, credentials in URLs, and any 32+ character run of mixed letters and
 digits. Text is clipped to 700 characters, keeping the head and the tail.
 
-**2. Classify (Jev, optional).** `health/src/classify.ts` uses `@prisma-labs/jev` (`jev-1.13.0`),
+**2. Classify (Jev, optional).** `health/src/classify.ts` uses `@prisma-labs/jev` (`jev-1.14.0`),
 an optional dependency, and needs `TYPESAFE_API_KEY` (see "What leaves the Mac"). All
 questions are in `health/src/questions.ts`. A tool error gets one request with two questions:
 the cause (`guard`, `permission`, `auth`, `misuse`, `environment`, `work`) and the cost (a
@@ -103,7 +103,7 @@ questions were tuned on hand-labeled real events from the author's transcripts. 
 published, so the committed cases are synthetic: each copies the shape of one real event (the
 harness's guard and permission wording, zsh and tool errors, CI and test-runner output, user
 corrections and requests) with invented paths, projects and messages, and keeps its label and
-the per-label counts. `cases.jsonl` (82 events) is the tuning set, so its 96% is optimistic.
+the per-label counts. `cases.jsonl` (82 events) is the tuning set, so its 95% is optimistic.
 `holdout.jsonl` (37 events, never tuned against) is the honest number: 92% exact label (34/37),
 92% on friction or not, 8% escalated, about $0.005 per run. The real holdout it replaced also
 scored 92% (34/37, 95% on friction or not). Known weak spots, in both sets: corrections phrased
