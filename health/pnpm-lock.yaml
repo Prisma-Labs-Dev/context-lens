@@ -26,8 +26,8 @@ importers:
         version: 7.0.2
     optionalDependencies:
       '@prisma-labs/jev':
-        specifier: github:Prisma-Labs-Dev/jev-kit#v0.1.1&path:/packages/jev
-        version: git+https://github.com/Prisma-Labs-Dev/jev-kit.git#f74c98a0e5fa432f163c195d031c7df82b42aef4&path:/packages/jev(zod@4.6.5)
+        specifier: github:Prisma-Labs-Dev/jev-kit#v0.2.0&path:/packages/jev
+        version: git+https://github.com/Prisma-Labs-Dev/jev-kit.git#033a47d814cd5b1db774e1bb28beec147787d4e2&path:/packages/jev(zod@4.6.5)
 
 packages:
 
@@ -275,18 +275,18 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@prisma-labs/jev@git+https://github.com/Prisma-Labs-Dev/jev-kit.git#f74c98a0e5fa432f163c195d031c7df82b42aef4&path:/packages/jev':
-    resolution: {commit: f74c98a0e5fa432f163c195d031c7df82b42aef4, path: /packages/jev, repo: https://github.com/Prisma-Labs-Dev/jev-kit.git, type: git}
-    version: 0.1.0
+  '@prisma-labs/jev@git+https://github.com/Prisma-Labs-Dev/jev-kit.git#033a47d814cd5b1db774e1bb28beec147787d4e2&path:/packages/jev':
+    resolution: {commit: 033a47d814cd5b1db774e1bb28beec147787d4e2, path: /packages/jev, repo: https://github.com/Prisma-Labs-Dev/jev-kit.git, type: git}
+    version: 0.2.0
     peerDependencies:
       zod: ^4.0.0
 
   '@types/node@26.6.4':
     resolution: {integrity: sha512-ldVPDCzj7fsaGZrLB0NuHuTvJcsNasysBAqMolr/cgxrLd1xbqxIr3XJiPnHHJUCxj5sNF1vnRj9aWnrVh5Jcg==}
 
-  '@typesafe-ai/sdk@0.6.0':
-    resolution: {integrity: sha512-IddX+Q0XM+VagOUZFeP7wZjaO4SHMdvnh2zEBdrZZnXedWI3BNK1lKhMx3ayrkFWvVLbVcUHJy6AVZlY+e6Jaw==}
-    engines: {node: '>=20'}
+  '@typesafe-ai/sdk@0.7.0':
+    resolution: {integrity: sha512-Yg3OZArCQMJx98ut8QVkhx3rFo9ON7pz8Hjzv8c3FGz69Sk8jYftLOlz+Wf6kq6jol/1m08aBnjRAzJr2x3GoQ==}
+    engines: {node: '>=22'}
 
   '@typescript/typescript-aix-ppc64@7.0.2':
     resolution: {integrity: sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ==}
@@ -565,9 +565,9 @@ snapshots:
   '@oxlint/binding-win32-x64-msvc@1.86.0':
     optional: true
 
-  '@prisma-labs/jev@git+https://github.com/Prisma-Labs-Dev/jev-kit.git#f74c98a0e5fa432f163c195d031c7df82b42aef4&path:/packages/jev(zod@4.6.5)':
+  '@prisma-labs/jev@git+https://github.com/Prisma-Labs-Dev/jev-kit.git#033a47d814cd5b1db774e1bb28beec147787d4e2&path:/packages/jev(zod@4.6.5)':
     dependencies:
-      '@typesafe-ai/sdk': 0.6.0
+      '@typesafe-ai/sdk': 0.7.0
       zod: 4.6.5
     optional: true
 
@@ -575,7 +575,7 @@ snapshots:
     dependencies:
       undici-types: 8.9.0
 
-  '@typesafe-ai/sdk@0.6.0':
+  '@typesafe-ai/sdk@0.7.0':
     optional: true
 
   '@typescript/typescript-aix-ppc64@7.0.2':

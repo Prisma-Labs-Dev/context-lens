@@ -30,7 +30,7 @@ for (const e of events) {
 }
 
 const started = Date.now();
-// jev-1.13 allows 80 requests/s per account; stay under it with room for other jobs.
+// Rate limits are per organization (console.typesafe.ai/rate-limits); stay modest so other jobs keep room.
 const jev = createJev({ model: MODEL, concurrency: 48, requestsPerMinute: 3600 });
 let failed = 0;
 const results = await jev.map([...todo.entries()], async ([key, e]) => {

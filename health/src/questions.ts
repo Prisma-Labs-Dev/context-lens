@@ -2,7 +2,7 @@
 // Change a question, bump VERSION (it keys the answer cache), then run `pnpm eval`.
 
 export const VERSION = "2026-10-04.3";
-export const MODEL = "jev-1.13.0";
+export const MODEL = "jev-1.14.0";
 
 /** Why a tool call failed. State: { tool, command, error, failed_before }. */
 export const TOOL_ERROR = {
