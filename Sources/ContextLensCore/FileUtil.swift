@@ -32,9 +32,12 @@ enum FileUtil {
         (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }
 
+    /// The path-based call follows a symlinked directory (`~/.claude/skills -> ~/dotfiles/skills`);
+    /// the URL-based one fails on it with "Not a directory".
     static func children(_ url: URL) -> [URL] {
-        ((try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? [])
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        ((try? fm.contentsOfDirectory(atPath: url.path)) ?? [])
+            .sorted()
+            .map { url.appending(path: $0) }
     }
 
     /// All markdown files under a directory, recursively, sorted by path.

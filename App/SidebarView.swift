@@ -19,6 +19,13 @@ struct SidebarView: View {
             VStack(alignment: .leading, spacing: 6) {
                 SidebarAction(title: "Open folder…", systemImage: "plus") { model.chooseFolder() }
                 SidebarSearch(text: $model.search)
+                let guarded = model.foldersNeedingAccess
+                if guarded > 0 {
+                    SidebarAction(title: "Full Disk Access for \(guarded) folder\(guarded == 1 ? "" : "s")…", systemImage: "lock") {
+                        model.openFullDiskAccessSettings()
+                    }
+                    .help("Session folders in Documents, Desktop, iCloud Drive or other guarded places stay unread until Context Lens has Full Disk Access.")
+                }
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 8)
@@ -155,6 +162,7 @@ struct TopBar: View {
                 PresetPicker()
                 SourcePicker()
                 LaunchButton()
+                McpSwitchesButton()
                 IconButton(systemImage: "folder", help: "Reveal in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: dir)])
                 }

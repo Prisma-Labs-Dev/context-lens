@@ -23,6 +23,25 @@ Usage:
                                                           to ~/.context-lens/health/proposals/
   context-lens health proposals                           Proposals, newest first
   context-lens health status <id> <open|applied|briefed|rejected> [--note text]
+  context-lens skills [--since 30d|all] [--cwd <dir>]   Skills sessions used (Skill tool, slash command, subagent, SKILL.md read)
+                                                          across Claude Code, Codex and Copilot CLI, and installed skills none
+                                                          used. Cached in ~/.context-lens/skills/
+  context-lens skills --session <transcript|id>          The skills one session used, in order of first use
+  context-lens growth <transcript|id> [--all]             Claude Code: the first call's measured context against the transcript's
+                                                          estimate, compactions, and the calls where the context grew most
+                                                          (--all: every call)
+  context-lens measure [<dir>] [--cached|--history]       Claude Code: run claude -p "/context" in a folder for the real token
+                                                          counts, MCP tool schemas per server included. Kept as history in
+                                                          ~/.context-lens/context/, with /context runs found in transcripts
+                                                          (--cached: the latest, without running; --history: all of them)
+  context-lens mcp list [<dir>] [--harness claude|codex]
+                                                          MCP servers and plugins with MCP tools, their on/off state per scope
+                                                          (everywhere, project settings, here) and measured token cost
+  context-lens mcp enable|disable <name> [--scope folder|user] [--dry-run] [<dir>]
+                                                          Switch a server or plugin in the harness's own settings: folder
+                                                          (default) writes the project's local settings, user writes your
+                                                          user settings. Backs up to ~/.context-lens/backups/
+  context-lens mcp undo                                   Revert the last switch
   context-lens --help
 
 Options:
@@ -38,7 +57,7 @@ struct Options {
         while let a = it.next() {
             if a.hasPrefix("--") {
                 let key = String(a.dropFirst(2))
-                if key == "help" || key == "json" || key == "no-classify" || key == "dry-run" { flags[key] = "true" } else { flags[key] = it.next() ?? "" }
+                if key == "help" || key == "all" || key == "cached" || key == "history" || key == "json" || key == "no-classify" || key == "dry-run" { flags[key] = "true" } else { flags[key] = it.next() ?? "" }
             } else {
                 positional.append(a)
             }
@@ -185,6 +204,37 @@ case "session":
     emit(SnapshotOut(snap))
 case "health":
     runHealth(opts)
+case "skills":
+    runSkills(opts)
+case "growth":
+    runGrowth(opts)
+case "mcp":
+    runMcp(opts)
+case "measure":
+    let store = MeasuredContextStore()
+    if opts.flags["history"] != nil {
+        store.harvest(around: dir.path)
+        emit(store.history(dir.path).map(MeasuredOut.init))
+    } else if opts.flags["cached"] != nil {
+        store.harvest(around: dir.path)
+        guard let m = store.cached(dir.path) else { fail("no measurement of \(dir.path)") }
+        emit(MeasuredOut(m))
+    } else {
+        do { emit(MeasuredOut(try store.measure(dir.path))) } catch { fail("\(error)") }
+    }
 default:
     fail("unknown command \(command)")
+}
+
+struct MeasuredOut: Encodable {
+    var measured: MeasuredContext
+    /// Harness prompt, built-in tools and MCP tool schemas: what no file shows.
+    var notInFiles: Int
+    var mcpServers: [MeasuredContext.Row]
+    /// The same segments the app's bar shows.
+    var attribution: ContextAttribution
+
+    init(_ m: MeasuredContext) {
+        measured = m; notInFiles = m.notInFiles; mcpServers = m.mcpServers; attribution = .measured(m)
+    }
 }

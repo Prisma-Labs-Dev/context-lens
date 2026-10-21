@@ -148,10 +148,13 @@ public struct ContextItem: Identifiable, Hashable, Codable, Sendable {
     }
 
     public var tokens: Int { TokenEstimate.tokens(content) }
+
+    public var hasProblem: Bool { !issues.isEmpty || diskStatus == .changed || diskStatus == .deleted }
 }
 
 public enum TokenEstimate {
-    public static func tokens(_ text: String) -> Int { (text.utf8.count + 3) / 4 }
+    public static func tokens(_ text: String) -> Int { tokens(chars: text.utf8.count) }
+    public static func tokens(chars: Int) -> Int { (chars + 3) / 4 }
 }
 
 public struct ContextSnapshot: Sendable {
@@ -215,8 +218,14 @@ public struct HarnessEnvironment: Sendable {
             ?? URL(filePath: "/Library/Application Support/ClaudeCode/CLAUDE.md")
     }
 
+    /// `$HOME` when set, as the harnesses use it, else the account's home folder.
+    public static var userHome: URL {
+        ProcessInfo.processInfo.environment["HOME"].flatMap { $0.isEmpty ? nil : URL(filePath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser
+    }
+
     public static var current: HarnessEnvironment {
-        let home = FileManager.default.homeDirectoryForCurrentUser
+        let home = userHome
         let codex = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(filePath: $0) }
         return HarnessEnvironment(home: home, codexHome: codex)
     }

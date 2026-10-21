@@ -21,12 +21,24 @@ struct ContextLensApp: App {
                     .keyboardShortcut("o")
                 Button("Reload") { model.reloadAll() }
                     .keyboardShortcut("r")
+                Button("MCP Settings…") { model.openMcpSwitches() }
+                    .keyboardShortcut("m", modifiers: [.command, .shift])
+                    .disabled(model.selectedDirectory == nil)
                 HealthCommand()
+                SkillsCommand()
             }
         }
 
         Window("Agent Health", id: "health") {
             HealthView()
+                .frame(minWidth: 900, minHeight: 560)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1240, height: 820)
+
+        Window("Skills", id: "skills") {
+            SkillsView()
+                .environment(model)
                 .frame(minWidth: 900, minHeight: 560)
         }
         .windowStyle(.hiddenTitleBar)
@@ -55,6 +67,10 @@ struct MenuBarMenu: View {
         Button("Open Context Lens") { show() }
         Button("Agent Health") {
             openWindow(id: "health")
+            NSApp.activate()
+        }
+        Button("Skills") {
+            openWindow(id: "skills")
             NSApp.activate()
         }
         Divider()
@@ -103,6 +119,16 @@ struct HealthCommand: View {
     var body: some View {
         Button("Agent Health") { openWindow(id: "health") }
             .keyboardShortcut("h", modifiers: [.command, .shift])
+    }
+}
+
+/// Window menu command for the Skills window (⌘⇧K).
+struct SkillsCommand: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Skills") { openWindow(id: "skills") }
+            .keyboardShortcut("k", modifiers: [.command, .shift])
     }
 }
 
@@ -165,6 +191,9 @@ struct ContentView: View {
         .sheet(item: Binding(get: { model.namingPreset }, set: { model.namingPreset = $0 })) { naming in
             PresetNameSheet(naming: naming).environment(model)
         }
+        .sheet(isPresented: Binding(get: { model.showingMcpSwitches }, set: { model.showingMcpSwitches = $0; if !$0 { model.pendingSwitch = nil } })) {
+            McpSwitchesSheet().environment(model)
+        }
         .onAppear {
             // `-appearance light|dark` forces an appearance, for checking both themes.
             let args = ProcessInfo.processInfo.arguments
@@ -173,6 +202,10 @@ struct ContentView: View {
             }
             // `-health` opens the Agent Health window too.
             if args.contains("-health") { openWindow(id: "health") }
+            // `-skills` opens the Skills window too.
+            if args.contains("-skills") { openWindow(id: "skills") }
+            // `-mcp-settings` opens the MCP switches for the folder.
+            if args.contains("-mcp-settings") { model.openMcpSwitches() }
         }
     }
 }

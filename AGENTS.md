@@ -11,6 +11,11 @@ in that doc and update the doc, the resolver and the tests together.
   computer use cannot open).
 - Presets must never write to files the harnesses read normally. Generated settings go under
   `~/.context-lens/generated/`; docs/presets.md lists every switch and how it was verified.
+- One exception: the MCP settings sheet and `context-lens mcp enable|disable` switch MCP servers
+  and plugins in the harnesses' own settings, on purpose. Only `Sources/ContextLensCore/Toggles`
+  writes them, through `ConfigWriter` (lock, key-level edits, backup, undo); it writes only the
+  keys in docs/harness-rules.md ("Switching MCP servers and plugins"). Keep it behind the Settings
+  sheet, never call it from presets, and test it on fixtures only.
 - UI direction: an IDE, not a web page. Neutral panels, compact single-line rows, system font,
   monospace for content, color only for meaning (harness, kind, stale, changed).
 - The Xcode project is generated from `project.yml`; do not commit `ContextLens.xcodeproj`.
